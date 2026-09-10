@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.1.0</Version>
+    <AssemblyName>AltHenkan</AssemblyName>
+    <RootNamespace>AltHenkan</RootNamespace>
+    <ApplicationIcon>AltHenkan.ico</ApplicationIcon>
+    <!-- Build with -p:UiAccess=true to embed app.uiaccess.manifest (uiAccess="true") instead.
+         See that file for the signing and install-location requirements. -->
+    <ApplicationManifest Condition="'$(UiAccess)' == 'true'">app.uiaccess.manifest</ApplicationManifest>
+    <ApplicationManifest Condition="'$(UiAccess)' != 'true'">app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="AltHenkan.ico" LogicalName="AltHenkan.ico" />
+  </ItemGroup>
+
+</Project>
+

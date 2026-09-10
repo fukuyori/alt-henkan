@@ -1,0 +1,25 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AltHenkan", "src\AltHenkan\AltHenkan.csproj", "{F05E5359-E216-4AC6-B93B-97A479BC9B63}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AltHenkan.LogicTests", "tests\AltHenkan.LogicTests\AltHenkan.LogicTests.csproj", "{BA9AB15E-E01B-442B-9FAD-345D524D5B79}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F05E5359-E216-4AC6-B93B-97A479BC9B63}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F05E5359-E216-4AC6-B93B-97A479BC9B63}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F05E5359-E216-4AC6-B93B-97A479BC9B63}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F05E5359-E216-4AC6-B93B-97A479BC9B63}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BA9AB15E-E01B-442B-9FAD-345D524D5B79}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BA9AB15E-E01B-442B-9FAD-345D524D5B79}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BA9AB15E-E01B-442B-9FAD-345D524D5B79}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BA9AB15E-E01B-442B-9FAD-345D524D5B79}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Embedded only when the project is built with -p:UiAccess=true (see AltHenkan.csproj).
+  uiAccess="true" lets the low-level keyboard hook receive input aimed at windows of
+  elevated (administrator) processes, and lets SendInput reach them, without running
+  Alt Henkan itself elevated. Windows only honours it when the executable is
+  Authenticode-signed with a certificate trusted by the machine AND installed under a
+  secure location such as Program Files. An unsigned or wrongly located build with this
+  manifest refuses to start. Regular builds use app.manifest (uiAccess="false").
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="AltHenkan.app" />
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="true" />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>
