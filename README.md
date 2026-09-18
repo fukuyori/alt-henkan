@@ -37,6 +37,12 @@ Windows の UIPI により、通常権限のプロセスは、管理者権限で
 
 設定は `%LOCALAPPDATA%\AltHenkan\settings.json` に保存されます。
 
+### 長時間稼働時のフック維持
+
+入力フックは設定画面とは別の専用スレッドで処理し、診断ログの書き込みと通知表示はフックから切り離しています。
+Windows が通知なくフックを解除した場合に備え、30 秒ごとに再登録を予約し、1 秒以上無入力で、キー・マウスボタンが押されておらず、Alt 操作の途中でもない時点で再登録します。操作が続いている間は再登録を延期します。
+スリープ復帰・ロック解除・「有効」のオフ→オン時にも再登録を予約します。
+
 ## ビルドと実行
 
 ```powershell
@@ -44,6 +50,8 @@ dotnet build .\AltHenkan.sln
 dotnet run --project .\tests\AltHenkan.LogicTests\AltHenkan.LogicTests.csproj
 dotnet run --project .\src\AltHenkan\AltHenkan.csproj
 ```
+
+Windows フックの登録・解除・無入力時の自動再登録も検証する場合は、`dotnet run --project .\tests\AltHenkan.LogicTests\AltHenkan.LogicTests.csproj -- --native-hooks` を実行します。検証用フックは無効状態で入力を通過させ、キー入力は送信しません。自動再登録の検証中はキーやマウスを操作しないでください。
 
 ### リリースビルドとインストーラー
 
@@ -87,6 +95,8 @@ Start-Process "C:\Program Files\AltHenkan\AltHenkan.exe" -ArgumentList "--diagno
 ```
 
 左右の Alt を一度ずつ押し、通知領域のメニューからアプリを終了して、`%LOCALAPPDATA%\AltHenkan\AltHenkan-diagnostics.log` を確認してください。ログには Alt の処理と入力注入の結果だけが記録され、入力した文字は記録されません。
+
+フックの再登録世代・コールバック回数・遅いコールバックも記録します。ログ書き込みは容量制限付き非同期キューを使用し、ディスクが遅い場合はログを省略して入力処理を優先します。ログファイルへ書き込めない場合もアプリの入力処理は継続します。
 
 ## 制限事項
 

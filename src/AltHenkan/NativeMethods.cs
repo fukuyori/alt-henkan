@@ -50,6 +50,13 @@ internal static class NativeMethods
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct LastInputInfo
+    {
+        public uint Size;
+        public uint Time;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct MouseLlHookStruct
     {
         public Point Point;
@@ -120,6 +127,10 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetLastInputInfo(ref LastInputInfo info);
 
     [DllImport("user32.dll")]
     internal static extern nint GetForegroundWindow();

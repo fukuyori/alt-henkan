@@ -9,8 +9,6 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        DiagnosticLog.Initialize(args.Contains("--diagnostics", StringComparer.OrdinalIgnoreCase));
-
         using var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
         if (!createdNew)
         {
@@ -22,6 +20,7 @@ internal static class Program
             return;
         }
 
+        DiagnosticLog.Initialize(args.Contains("--diagnostics", StringComparer.OrdinalIgnoreCase));
         ApplicationConfiguration.Initialize();
         DiagnosticLog.Write("Windows Forms initialized.");
 
@@ -40,6 +39,10 @@ internal static class Program
                 "Alt Henkan",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+        finally
+        {
+            DiagnosticLog.Shutdown();
         }
     }
 }

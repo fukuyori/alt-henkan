@@ -6,6 +6,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AltInputService _inputService;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _enabledMenuItem;
+    private readonly Control _uiDispatcher;
     private AppSettings _settings;
     private bool _disposed;
     private long _lastInputErrorAtMilliseconds;
@@ -14,6 +15,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _settings = _settingsStore.Load();
         _inputService = new AltInputService(_settings);
+        _uiDispatcher = new Control();
+        _ = _uiDispatcher.Handle;
 
         _enabledMenuItem = new ToolStripMenuItem("有効")
         {
@@ -44,7 +47,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             Visible = true
         };
         _notifyIcon.DoubleClick += (_, _) => ShowSettings();
-        _inputService.InputInjectionFailed += ShowInputInjectionError;
+        _inputService.InputInjectionFailed += QueueInputInjectionError;
     }
 
     private static Icon LoadAppIcon()
@@ -113,6 +116,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _notifyIcon.ShowBalloonTip(3000);
     }
 
+    private void QueueInputInjectionError(int errorCode)
+    {
+        // Called on the hook thread. It must never wait for the UI or show a balloon here.
+        try
+        {
+            _uiDispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!_disposed)
+                {
+                    ShowInputInjectionError(errorCode);
+                }
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            // UI shutdown raced with an in-flight hook callback.
+        }
+    }
+
     protected override void ExitThreadCore()
     {
         _notifyIcon.Visible = false;
@@ -123,11 +145,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing && !_disposed)
         {
-            _notifyIcon.Visible = false;
-            _inputService.InputInjectionFailed -= ShowInputInjectionError;
-            _notifyIcon.Dispose();
-            _inputService.Dispose();
             _disposed = true;
+            _notifyIcon.Visible = false;
+            _inputService.InputInjectionFailed -= QueueInputInjectionError;
+            _inputService.Dispose();
+            _uiDispatcher.Dispose();
+            _notifyIcon.Dispose();
         }
 
         base.Dispose(disposing);

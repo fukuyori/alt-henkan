@@ -1,4 +1,7 @@
 using System.Runtime.InteropServices;
+using System.ComponentModel;
+using System.Diagnostics;
+using Microsoft.Win32;
 
 namespace AltHenkan;
 
@@ -11,10 +14,17 @@ internal sealed class AltInputService : IDisposable
     private readonly HashSet<uint> _nonAltKeysDown = [];
     private readonly AltState _leftAlt = new(AltSide.Left);
     private readonly AltState _rightAlt = new(AltSide.Right);
+    private readonly DedicatedMessageLoop _hookThread;
+    private System.Windows.Forms.Timer? _maintenanceTimer;
     private nint _keyboardHook;
     private nint _mouseHook;
     private AppSettings _settings;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private bool _refreshRequested;
+    private long _lastRefreshAtMilliseconds;
+    private int _hookGeneration;
+    private long _keyboardCallbackCount;
+    private long _mouseCallbackCount;
 
     public event Action<int>? InputInjectionFailed;
 
@@ -24,46 +34,117 @@ internal sealed class AltInputService : IDisposable
         _keyboardCallback = KeyboardHookCallback;
         _mouseCallback = MouseHookCallback;
 
+        _hookThread = new DedicatedMessageLoop(InitializeHookThread, CleanupHookThread);
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+    }
+
+    private void InitializeHookThread()
+    {
+        DiagnosticLog.Write($"Dedicated hook thread started: managed thread {Environment.CurrentManagedThreadId}.");
+        RegisterHooks();
+        _maintenanceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _maintenanceTimer.Tick += (_, _) => MaintainHooks();
+        _maintenanceTimer.Start();
+    }
+
+    private void RegisterHooks()
+    {
         var module = NativeMethods.GetModuleHandle(null);
-        _keyboardHook = NativeMethods.SetWindowsHookEx(
+        var keyboardHook = NativeMethods.SetWindowsHookEx(
             NativeMethods.WhKeyboardLl,
             _keyboardCallback,
             module,
             0);
-        if (_keyboardHook == 0)
+        if (keyboardHook == 0)
         {
-            throw new InvalidOperationException("キーボードフックを登録できませんでした。");
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "キーボードフックを登録できませんでした。");
         }
 
-        DiagnosticLog.Write($"Keyboard hook registered: 0x{_keyboardHook:X}.");
-
-        _mouseHook = NativeMethods.SetWindowsHookEx(
+        var mouseHook = NativeMethods.SetWindowsHookEx(
             NativeMethods.WhMouseLl,
             _mouseCallback,
             module,
             0);
-        if (_mouseHook == 0)
+        if (mouseHook == 0)
         {
-            NativeMethods.UnhookWindowsHookEx(_keyboardHook);
-            _keyboardHook = 0;
-            throw new InvalidOperationException("マウスフックを登録できませんでした。");
+            var errorCode = Marshal.GetLastWin32Error();
+            NativeMethods.UnhookWindowsHookEx(keyboardHook);
+            throw new Win32Exception(errorCode, "マウスフックを登録できませんでした。");
         }
 
-        DiagnosticLog.Write($"Mouse hook registered: 0x{_mouseHook:X}.");
+        // Install replacements first: a failed renewal must not discard a working pair.
+        UnregisterHooks();
+        _keyboardHook = keyboardHook;
+        _mouseHook = mouseHook;
+        _lastRefreshAtMilliseconds = Environment.TickCount64;
+        _refreshRequested = false;
+        _hookGeneration++;
+        DiagnosticLog.Write(
+            $"Hooks registered: generation={_hookGeneration}, keyboard=0x{_keyboardHook:X}, mouse=0x{_mouseHook:X}, keyboard callbacks={_keyboardCallbackCount}, mouse callbacks={_mouseCallbackCount}.");
     }
 
     public void UpdateSettings(AppSettings settings)
     {
-        var wasEnabled = _settings.Enabled;
-        _settings = settings.Normalize();
-
-        if (wasEnabled && !_settings.Enabled)
+        var normalized = settings.Normalize();
+        PostToHookThread(() =>
         {
-            ResetActiveStates();
+            var wasEnabled = _settings.Enabled;
+            _settings = normalized;
+
+            if (wasEnabled && !_settings.Enabled)
+            {
+                ResetActiveStates();
+            }
+            else if (!wasEnabled && _settings.Enabled)
+            {
+                RequestRefresh("enabled");
+            }
+        });
+    }
+
+    private async void PostToHookThread(Action action)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            await _hookThread.InvokeAsync(action).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            DiagnosticLog.Write($"Hook-thread command failed: {exception}");
         }
     }
 
     private nint KeyboardHookCallback(int code, nint wParam, nint lParam)
+    {
+        var startedAt = Stopwatch.GetTimestamp();
+        _keyboardCallbackCount++;
+        try
+        {
+            return KeyboardHookCore(code, wParam, lParam);
+        }
+        catch (Exception exception)
+        {
+            _refreshRequested = true;
+            DiagnosticLog.Write($"Keyboard callback failed; renewal requested: {exception}");
+            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (elapsed.TotalMilliseconds >= 100)
+            {
+                DiagnosticLog.Write($"Slow keyboard callback: {elapsed.TotalMilliseconds:F1} ms.");
+            }
+        }
+    }
+
+    private nint KeyboardHookCore(int code, nint wParam, nint lParam)
     {
         if (code < 0 || _disposed)
         {
@@ -210,6 +291,30 @@ internal sealed class AltInputService : IDisposable
 
     private nint MouseHookCallback(int code, nint wParam, nint lParam)
     {
+        var startedAt = Stopwatch.GetTimestamp();
+        _mouseCallbackCount++;
+        try
+        {
+            return MouseHookCore(code, wParam, lParam);
+        }
+        catch (Exception exception)
+        {
+            _refreshRequested = true;
+            DiagnosticLog.Write($"Mouse callback failed; renewal requested: {exception}");
+            return NativeMethods.CallNextHookEx(_mouseHook, code, wParam, lParam);
+        }
+        finally
+        {
+            var elapsed = Stopwatch.GetElapsedTime(startedAt);
+            if (elapsed.TotalMilliseconds >= 100)
+            {
+                DiagnosticLog.Write($"Slow mouse callback: {elapsed.TotalMilliseconds:F1} ms.");
+            }
+        }
+    }
+
+    private nint MouseHookCore(int code, nint wParam, nint lParam)
+    {
         if (code >= 0 && !_disposed && _settings.Enabled && IsMouseInteraction(unchecked((int)wParam)))
         {
             PromotePendingAltsToNative();
@@ -248,6 +353,8 @@ internal sealed class AltInputService : IDisposable
 
     private bool IsAnyNonAltKeyDown()
     {
+        // A missed key-up must not classify every later Alt tap as a chord.
+        _nonAltKeysDown.RemoveWhere(key => !IsVirtualKeyDown(key));
         return _nonAltKeysDown.Count > 0 ||
                IsVirtualKeyDown(NativeMethods.VkShift) ||
                IsVirtualKeyDown(NativeMethods.VkControl) ||
@@ -366,16 +473,105 @@ internal sealed class AltInputService : IDisposable
         _nonAltKeysDown.Clear();
     }
 
-    public void Dispose()
+    private void RequestRefresh(string reason)
+    {
+        _refreshRequested = true;
+        DiagnosticLog.Write($"Hook renewal requested: {reason}.");
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs args)
+    {
+        if (args.Mode == PowerModes.Suspend)
+        {
+            PostToHookThread(ResetActiveStates);
+        }
+        else if (args.Mode == PowerModes.Resume)
+        {
+            PostToHookThread(() => RequestRefresh("power resume"));
+        }
+    }
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs args)
+    {
+        if (args.Reason == SessionSwitchReason.SessionLock)
+        {
+            PostToHookThread(ResetActiveStates);
+        }
+        else if (args.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            PostToHookThread(() => RequestRefresh("session unlock"));
+        }
+    }
+
+    private void MaintainHooks()
     {
         if (_disposed)
         {
             return;
         }
 
-        ResetActiveStates();
-        _disposed = true;
+        try
+        {
+            var info = new NativeMethods.LastInputInfo
+            {
+                Size = (uint)Marshal.SizeOf<NativeMethods.LastInputInfo>()
+            };
+            if (!NativeMethods.GetLastInputInfo(ref info))
+            {
+                return;
+            }
 
+            var idleMilliseconds = HookMaintenancePolicy.CalculateIdleMilliseconds(
+                unchecked((uint)Environment.TickCount), info.Time);
+            var gestureActive = _leftAlt.IsDown || _rightAlt.IsDown;
+            if (idleMilliseconds < HookMaintenancePolicy.MinimumIdleMilliseconds || gestureActive)
+            {
+                return;
+            }
+
+            var anyKeyDown = false;
+            // Includes mouse buttons and modifiers. Never refresh while a key is held.
+            for (uint key = 1; key < 255; key++)
+            {
+                if (IsVirtualKeyDown(key))
+                {
+                    anyKeyDown = true;
+                    break;
+                }
+            }
+
+            if (HookMaintenancePolicy.ShouldRefresh(
+                Environment.TickCount64 - _lastRefreshAtMilliseconds,
+                idleMilliseconds, anyKeyDown, gestureActive, _refreshRequested))
+            {
+                ResetActiveStates();
+                RegisterHooks();
+            }
+        }
+        catch (Exception exception)
+        {
+            _refreshRequested = true;
+            DiagnosticLog.Write($"Hook renewal failed; will retry at safe idle: {exception}");
+        }
+    }
+
+    private void CleanupHookThread()
+    {
+        _maintenanceTimer?.Stop();
+        _maintenanceTimer?.Dispose();
+        try
+        {
+            ResetActiveStates();
+        }
+        finally
+        {
+            UnregisterHooks();
+        }
+        DiagnosticLog.Write("Dedicated hook thread stopped.");
+    }
+
+    private void UnregisterHooks()
+    {
         if (_mouseHook != 0)
         {
             NativeMethods.UnhookWindowsHookEx(_mouseHook);
@@ -387,8 +583,19 @@ internal sealed class AltInputService : IDisposable
             NativeMethods.UnhookWindowsHookEx(_keyboardHook);
             _keyboardHook = 0;
         }
+    }
 
-        DiagnosticLog.Write("Hooks unregistered.");
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.SessionSwitch -= OnSessionSwitch;
+        _hookThread.Dispose();
     }
 
     private enum AltSide

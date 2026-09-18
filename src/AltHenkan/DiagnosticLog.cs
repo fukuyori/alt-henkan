@@ -4,8 +4,7 @@ namespace AltHenkan;
 
 internal static class DiagnosticLog
 {
-    private static readonly object SyncRoot = new();
-    private static bool _enabled;
+    private static QueuedDiagnosticWriter? _writer;
 
     // %LOCALAPPDATA%\AltHenkan: the installed executable lives under Program Files,
     // which is not writable by a normal user.
@@ -16,36 +15,25 @@ internal static class DiagnosticLog
 
     public static void Initialize(bool enabled)
     {
-        _enabled = enabled;
+        Shutdown();
         if (!enabled)
         {
             return;
         }
 
-        lock (SyncRoot)
+        _writer = new QueuedDiagnosticWriter(() =>
         {
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            File.WriteAllText(
-                Path,
-                $"{DateTimeOffset.Now:O} Diagnostic logging started.{Environment.NewLine}",
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        }
+            return new StreamWriter(Path, append: false,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)) { AutoFlush = true };
+        });
+        Write("Diagnostic logging started.");
     }
 
     public static void Write(string message)
     {
-        if (!_enabled)
-        {
-            return;
-        }
-
-        lock (SyncRoot)
-        {
-            File.AppendAllText(
-                Path,
-                $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}",
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-        }
+        Volatile.Read(ref _writer)?.TryWrite(message);
     }
-}
 
+    public static void Shutdown() => Interlocked.Exchange(ref _writer, null)?.Dispose();
+}
