@@ -14,7 +14,8 @@ Build the Alt Henkan Inno Setup installer. With -Sign, code-sign the executable,
 The default (uiAccess) build requires -Sign and installs per-machine under Program Files, because
 Windows only starts uiAccess executables that are signed with a machine-trusted certificate and
 located in a secure location. Use -NoUiAccess for an unsigned, per-user build that cannot act on
-elevated windows.
+elevated windows. If -Sign is omitted for the default build, guidance is displayed and the script
+returns without building an installer.
 
 .PARAMETER Sign
 Enable code signing. The certificate is taken from the CODESIGN_CERT environment variable (one of):
@@ -53,7 +54,11 @@ param(
 $UiAccess = -not $NoUiAccess
 
 if ($UiAccess -and -not $Sign) {
-    throw "The default uiAccess build requires -Sign (an unsigned uiAccess executable refuses to start). Pass -Sign, or -NoUiAccess for a plain per-user build."
+    Write-Host "インストーラーの作成は行いません。既定のuiAccess版は、署名なしでは起動できません。"
+    Write-Host "署名付きで作成する場合： .\scripts\build-installer.ps1 -Sign"
+    Write-Host "署名なしで作成する場合： .\scripts\build-installer.ps1 -NoUiAccess"
+    Write-Host "※ -NoUiAccess版は、管理者権限のアプリではキー変換を使えません。"
+    return
 }
 
 $ErrorActionPreference = "Stop"

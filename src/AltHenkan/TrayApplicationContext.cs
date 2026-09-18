@@ -6,9 +6,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly AltInputService _inputService;
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _enabledMenuItem;
+    private readonly ToolStripMenuItem _modeMenuItem;
+    private readonly ModeOverlayForm _modeOverlay = new();
     private readonly Control _uiDispatcher;
     private AppSettings _settings;
     private bool _disposed;
+    private bool _emacsActive;
     private long _lastInputErrorAtMilliseconds;
 
     public TrayApplicationContext()
@@ -24,6 +27,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             CheckOnClick = true
         };
         _enabledMenuItem.Click += (_, _) => SetEnabled(_enabledMenuItem.Checked);
+        _modeMenuItem = new ToolStripMenuItem { Enabled = false };
 
         var settingsMenuItem = new ToolStripMenuItem("設定...");
         settingsMenuItem.Click += (_, _) => ShowSettings();
@@ -34,6 +38,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.AddRange([
             _enabledMenuItem,
+            _modeMenuItem,
             settingsMenuItem,
             new ToolStripSeparator(),
             exitMenuItem
@@ -48,6 +53,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
         _notifyIcon.DoubleClick += (_, _) => ShowSettings();
         _inputService.InputInjectionFailed += QueueInputInjectionError;
+        _inputService.EmacsModeChanged += QueueModeChanged;
+        UpdateModeDisplay();
     }
 
     private static Icon LoadAppIcon()
@@ -66,6 +73,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         _settings = _settings with { Enabled = enabled };
         _inputService.UpdateSettings(_settings);
+        UpdateModeDisplay();
         SaveSettings();
     }
 
@@ -79,7 +87,48 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _settings = form.CreateSettings(_settings);
         _inputService.UpdateSettings(_settings);
+        _enabledMenuItem.Checked = _settings.Enabled;
+        if (!_settings.ShowModeChangeOverlay)
+        {
+            _modeOverlay.Dismiss();
+        }
+        UpdateModeDisplay();
         SaveSettings();
+    }
+
+    private void UpdateModeDisplay()
+    {
+        var featureEnabled = _settings.Enabled && _settings.EmacsEnabled;
+        if (!featureEnabled)
+        {
+            _emacsActive = false;
+            _modeOverlay.Dismiss();
+        }
+        var mode = !featureEnabled ? "Emacs機能：オフ" : _emacsActive ? "モード：Emacs" : "モード：通常";
+        _modeMenuItem.Text = mode;
+        _notifyIcon.Text = $"Alt Henkan — {mode}";
+    }
+
+    private void QueueModeChanged(bool active)
+    {
+        // Queue only: the input callback must never wait for rendering on the UI thread.
+        try
+        {
+            _uiDispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_disposed) return;
+                _emacsActive = active;
+                UpdateModeDisplay();
+                if (_settings.Enabled && _settings.EmacsEnabled && _settings.ShowModeChangeOverlay)
+                {
+                    _modeOverlay.ShowMode(_emacsActive);
+                }
+            }));
+        }
+        catch (InvalidOperationException)
+        {
+            // UI shutdown raced with an input callback.
+        }
     }
 
     private void SaveSettings()
@@ -148,7 +197,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _disposed = true;
             _notifyIcon.Visible = false;
             _inputService.InputInjectionFailed -= QueueInputInjectionError;
+            _inputService.EmacsModeChanged -= QueueModeChanged;
             _inputService.Dispose();
+            _modeOverlay.Dispose();
             _uiDispatcher.Dispose();
             _notifyIcon.Dispose();
         }

@@ -14,10 +14,17 @@ internal sealed record AppSettings
 
     public int LongPressMilliseconds { get; init; } = DefaultLongPressMilliseconds;
 
+    public bool EmacsEnabled { get; init; }
+
+    public bool ShowModeChangeOverlay { get; init; } = true;
+
+    public EmacsShortcutSettings EmacsShortcuts { get; init; } = new();
+
     public AppSettings Normalize()
     {
         return this with
         {
+            EmacsShortcuts = EmacsShortcuts ?? new EmacsShortcutSettings(),
             LongPressMilliseconds = Math.Clamp(
                 LongPressMilliseconds,
                 MinimumLongPressMilliseconds,
@@ -25,4 +32,3 @@ internal sealed record AppSettings
         };
     }
 }
-

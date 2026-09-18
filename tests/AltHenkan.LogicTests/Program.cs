@@ -5,6 +5,7 @@ using System.Diagnostics;
 
 var failures = new List<string>();
 var testsRun = 0;
+EmacsTests.Run((name, passed) => Check(name, true, passed));
 
 Check(
     "Short press sends conversion",
@@ -208,15 +209,35 @@ if (args.Contains("--native-hooks", StringComparer.Ordinal))
             Environment.TickCount64 - HookMaintenancePolicy.RefreshIntervalMilliseconds);
     }).WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
     var restoredByTimer = false;
+    uint maximumObservedIdle = 0;
+    uint lastObservedIdle = 0;
+    var heldKeysAtIdle = new HashSet<int>();
     var maintenanceDeadline = Environment.TickCount64 + 15_000;
     while (!restoredByTimer && Environment.TickCount64 < maintenanceDeadline)
     {
         Thread.Sleep(100);
         hookLoop.InvokeAsync(() =>
         {
+            var info = new NativeMethods.LastInputInfo { Size = (uint)Marshal.SizeOf<NativeMethods.LastInputInfo>() };
+            if (NativeMethods.GetLastInputInfo(ref info))
+            {
+                lastObservedIdle = HookMaintenancePolicy.CalculateIdleMilliseconds(unchecked((uint)Environment.TickCount), info.Time);
+                maximumObservedIdle = Math.Max(maximumObservedIdle, lastObservedIdle);
+                if (lastObservedIdle >= HookMaintenancePolicy.MinimumIdleMilliseconds)
+                {
+                    for (var key = 1; key < 255; key++)
+                    {
+                        if ((NativeMethods.GetAsyncKeyState(key) & 0x8000) != 0) heldKeysAtIdle.Add(key);
+                    }
+                }
+            }
             restoredByTimer = (int)serviceType.GetField("_hookGeneration", flags)!.GetValue(service)! >
                 generationBeforeMaintenance;
         }).WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+    }
+    if (!restoredByTimer)
+    {
+        Console.Error.WriteLine($"Native maintenance timeout: maximum OS idle={maximumObservedIdle} ms, last OS idle={lastObservedIdle} ms, held virtual keys observed at idle=[{string.Join(", ", heldKeysAtIdle.Order().Select(key => $"0x{key:X2}"))}].");
     }
     Check("Maintenance timer automatically reinstalls removed hooks at idle", true, restoredByTimer);
     service.Dispose();

@@ -25,6 +25,9 @@ internal static class NativeMethods
 
     internal const uint VkShift = 0x10;
     internal const uint VkControl = 0x11;
+    internal const uint VkCapsLock = 0x14;
+    internal const uint VkLControl = 0xA2;
+    internal const uint VkRControl = 0xA3;
     internal const uint VkMenu = 0x12;
     internal const uint VkLMenu = 0xA4;
     internal const uint VkRMenu = 0xA5;
@@ -127,6 +130,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern short GetAsyncKeyState(int virtualKey);
+
+    [DllImport("user32.dll")]
+    internal static extern short GetKeyState(int virtualKey);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
