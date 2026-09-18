@@ -202,11 +202,12 @@ internal sealed class AltInputService : IDisposable
         var modifiers = isKeyDown && emacsEnabled && _emacsState.Active && EmacsBindings.IsSourceKey(data.VirtualKeyCode)
             ? GetNavigationModifiers() : NavigationModifiers.None;
         if (_emacsState.HandleKey(data.VirtualKeyCode, isKeyDown, emacsEnabled,
-            modifiers, _settings.EmacsShortcuts, out var binding))
+            modifiers, _settings.EmacsShortcuts, out var binding,
+            modifiers == NavigationModifiers.None ? null : GetEmacsSideFilter()))
         {
             if (binding is not null)
             {
-                if (binding.Modifiers == NavigationModifiers.Alt)
+                if ((binding.Modifiers & NavigationModifiers.Alt) != 0)
                 {
                     ConsumePendingAltGestures();
                 }
@@ -239,7 +240,16 @@ internal sealed class AltInputService : IDisposable
 
         if (_leftAlt.IsDown || _rightAlt.IsDown)
         {
-            PromotePendingAltsToNative();
+            if (IsShiftKey(data.VirtualKeyCode) && isKeyDown && CanDeferAltShift())
+            {
+                // Alt+< / Alt+> need Shift. Keep pending Alt hidden until the next key.
+                MarkDeferredShiftChord();
+            }
+            else if (!(IsShiftKey(data.VirtualKeyCode) && isKeyUp &&
+                (_leftAlt.ConsumedByEmacs || _rightAlt.ConsumedByEmacs)))
+            {
+                PromotePendingAltsToNative();
+            }
         }
 
         if (isKeyDown)
@@ -283,8 +293,16 @@ internal sealed class AltInputService : IDisposable
 
             if (IsAnyNonAltKeyDown())
             {
-                state.OriginalDownPassed = true;
-                return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+                if (IsVirtualKeyDown(NativeMethods.VkShift) && CanDeferAltShift() &&
+                    !_emacsState.GestureActive && _nonAltKeysDown.All(IsShiftKey))
+                {
+                    state.DeferredShiftChord = true;
+                }
+                else
+                {
+                    state.OriginalDownPassed = true;
+                    return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+                }
             }
 
             return 1;
@@ -314,6 +332,14 @@ internal sealed class AltInputService : IDisposable
 
         if (state.ConsumedByEmacs)
         {
+            state.Reset();
+            return 1;
+        }
+
+        if (state.DeferredShiftChord)
+        {
+            // No angle shortcut followed: preserve the native Alt+Shift chord.
+            SendAltTap(state);
             state.Reset();
             return 1;
         }
@@ -437,11 +463,36 @@ internal sealed class AltInputService : IDisposable
         if (_rightAlt.IsDown) _rightAlt.ConsumedByEmacs = true;
     }
 
+    private EmacsSideFilter GetEmacsSideFilter()
+    {
+        var control = ModifierSides.None;
+        var alt = ModifierSides.None;
+        if (IsVirtualKeyDown(NativeMethods.VkLControl)) control |= ModifierSides.Left;
+        if (IsVirtualKeyDown(NativeMethods.VkRControl)) control |= ModifierSides.Right;
+        if (_leftAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkLMenu)) alt |= ModifierSides.Left;
+        if (_rightAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkRMenu)) alt |= ModifierSides.Right;
+        return new(control, alt, _settings.EmacsControlSide, _settings.EmacsAltSide);
+    }
+
+    private static bool IsShiftKey(uint key) => key is NativeMethods.VkShift or NativeMethods.VkLShift or NativeMethods.VkRShift;
+
+    private bool CanDeferAltShift() => _settings.Enabled && _settings.EmacsEnabled && _emacsState.Active &&
+        EmacsBindings.ShouldDeferAltShift(_settings, GetEmacsSideFilter().AltDown) &&
+        !IsVirtualKeyDown(NativeMethods.VkControl) && !IsVirtualKeyDown(NativeMethods.VkLWin) && !IsVirtualKeyDown(NativeMethods.VkRWin);
+
+    private void MarkDeferredShiftChord()
+    {
+        if (_leftAlt.IsDown && !_leftAlt.OriginalDownPassed && !_leftAlt.NativeDownSent) _leftAlt.DeferredShiftChord = true;
+        if (_rightAlt.IsDown && !_rightAlt.OriginalDownPassed && !_rightAlt.NativeDownSent) _rightAlt.DeferredShiftChord = true;
+    }
+
     private void SendNavigation(EmacsBinding binding)
     {
         var modifiers = new List<ushort>();
         if (IsVirtualKeyDown(NativeMethods.VkLControl)) modifiers.Add((ushort)NativeMethods.VkLControl);
         if (IsVirtualKeyDown(NativeMethods.VkRControl)) modifiers.Add((ushort)NativeMethods.VkRControl);
+        if (IsVirtualKeyDown(NativeMethods.VkLShift)) modifiers.Add((ushort)NativeMethods.VkLShift);
+        if (IsVirtualKeyDown(NativeMethods.VkRShift)) modifiers.Add((ushort)NativeMethods.VkRShift);
         if (_leftAlt.IsDown && (_leftAlt.OriginalDownPassed || _leftAlt.NativeDownSent))
             modifiers.Add((ushort)NativeMethods.VkLMenu);
         if (_rightAlt.IsDown && (_rightAlt.OriginalDownPassed || _rightAlt.NativeDownSent))
@@ -449,7 +500,7 @@ internal sealed class AltInputService : IDisposable
 
         var plan = NavigationInputPlan.Create(binding, modifiers);
         SendKeyboardInputs(plan.Select(stroke => CreateVirtualKeyInput(stroke.VirtualKey, stroke.KeyUp)).ToArray());
-        DiagnosticLog.Write($"Emacs navigation: {binding.Shortcut}.");
+        DiagnosticLog.Write($"Emacs operation: {binding.Shortcut}.");
     }
 
     private void EnsureNativeCapsLockOff(bool nativeCapsLockOn)
@@ -526,7 +577,7 @@ internal sealed class AltInputService : IDisposable
                     VirtualKey = virtualKey,
                     Flags = (keyUp ? NativeMethods.KeyeventfKeyUp : 0) |
                         (virtualKey is (ushort)Keys.Left or (ushort)Keys.Right or (ushort)Keys.Up or (ushort)Keys.Down or
-                            (ushort)Keys.Home or (ushort)Keys.End or (ushort)Keys.RControlKey or (ushort)Keys.RMenu
+                            (ushort)Keys.Home or (ushort)Keys.End or (ushort)Keys.Delete or (ushort)Keys.RControlKey or (ushort)Keys.RMenu
                             ? NativeMethods.KeyeventfExtendedKey : 0),
                     ExtraInfo = OwnInputMarker
                 }
@@ -720,6 +771,7 @@ internal sealed class AltInputService : IDisposable
         public bool NativeDownSent { get; set; }
 
         public bool ConsumedByEmacs { get; set; }
+        public bool DeferredShiftChord { get; set; }
 
         public long DownAtMilliseconds { get; set; }
 
@@ -733,6 +785,7 @@ internal sealed class AltInputService : IDisposable
             OriginalDownPassed = false;
             NativeDownSent = false;
             ConsumedByEmacs = false;
+            DeferredShiftChord = false;
             DownAtMilliseconds = Environment.TickCount64;
             ScanCode = checked((ushort)scanCode);
             IsExtended = isExtended;
@@ -744,6 +797,7 @@ internal sealed class AltInputService : IDisposable
             OriginalDownPassed = false;
             NativeDownSent = false;
             ConsumedByEmacs = false;
+            DeferredShiftChord = false;
             DownAtMilliseconds = 0;
             ScanCode = 0;
             IsExtended = false;

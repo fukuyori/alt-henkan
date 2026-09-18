@@ -46,7 +46,8 @@ internal sealed class EmacsKeyboardState
     }
 
     public bool HandleKey(uint key, bool keyDown, bool enabled,
-        NavigationModifiers modifiers, EmacsShortcutSettings settings, out EmacsBinding? binding)
+        NavigationModifiers modifiers, EmacsShortcutSettings settings, out EmacsBinding? binding,
+        EmacsSideFilter? sideFilter = null)
     {
         binding = null;
         if (!EmacsBindings.IsSourceKey(key)) return false;
@@ -59,7 +60,7 @@ internal sealed class EmacsKeyboardState
         var captured = _capturedKeys.TryGetValue(key, out var originalShortcut);
         if (enabled && Active)
         {
-            binding = EmacsBindings.Resolve(key, modifiers, settings);
+            binding = EmacsBindings.Resolve(key, modifiers, settings, sideFilter);
             if (binding is not null && (!captured || originalShortcut == binding.Shortcut))
             {
                 _capturedKeys[key] = binding.Shortcut;

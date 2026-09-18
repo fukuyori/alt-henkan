@@ -18,9 +18,14 @@ internal static class EmacsTests
             (EmacsShortcut.ControlA, Keys.A, NavigationModifiers.Control, Keys.Home, false),
             (EmacsShortcut.ControlE, Keys.E, NavigationModifiers.Control, Keys.End, false),
             (EmacsShortcut.AltB, Keys.B, NavigationModifiers.Alt, Keys.Left, true),
-            (EmacsShortcut.AltF, Keys.F, NavigationModifiers.Alt, Keys.Right, true)
+            (EmacsShortcut.AltF, Keys.F, NavigationModifiers.Alt, Keys.Right, true),
+            (EmacsShortcut.AltLess, Keys.Oemcomma, NavigationModifiers.Alt | NavigationModifiers.Shift, Keys.Home, true),
+            (EmacsShortcut.AltGreater, Keys.OemPeriod, NavigationModifiers.Alt | NavigationModifiers.Shift, Keys.End, true),
+            (EmacsShortcut.ControlD, Keys.D, NavigationModifiers.Control, Keys.Delete, false),
+            (EmacsShortcut.AltD, Keys.D, NavigationModifiers.Alt, Keys.Delete, true),
+            (EmacsShortcut.ControlK, Keys.K, NavigationModifiers.Control, Keys.Delete, false)
         };
-        check("Only eight navigation bindings exist", EmacsBindings.All.Count == expected.Length);
+        check("Thirteen Emacs bindings exist", EmacsBindings.All.Count == expected.Length);
         foreach (var item in expected)
         {
             var binding = EmacsBindings.Resolve((uint)item.Source, item.Modifiers, defaults.EmacsShortcuts);
@@ -30,8 +35,9 @@ internal static class EmacsTests
             check($"{item.Shortcut} can be disabled independently", !disabled.IsEnabled(item.Shortcut) &&
                 expected.Where(other => other.Shortcut != item.Shortcut).All(other => disabled.IsEnabled(other.Shortcut)) &&
                 EmacsBindings.Resolve((uint)item.Source, item.Modifiers, disabled) is null);
-            check($"{item.Shortcut} excludes Shift", EmacsBindings.Resolve((uint)item.Source,
-                item.Modifiers | NavigationModifiers.Shift, defaults.EmacsShortcuts) is null);
+            var wrongShift = item.Modifiers ^ NavigationModifiers.Shift;
+            check($"{item.Shortcut} requires the exact Shift state", EmacsBindings.Resolve((uint)item.Source,
+                wrongShift, defaults.EmacsShortcuts) is null);
             check($"{item.Shortcut} excludes Windows modifier", EmacsBindings.Resolve((uint)item.Source,
                 item.Modifiers | NavigationModifiers.Windows, defaults.EmacsShortcuts) is null);
         }
@@ -47,7 +53,7 @@ internal static class EmacsTests
         check("CapsLock selects Emacs", state.HandleCapsLock(true, true, out changed) && changed && state.Active);
         check("CapsLock repeat does not toggle", state.HandleCapsLock(true, true, out changed) && !changed && state.Active);
         check("CapsLock up is paired", state.HandleCapsLock(false, true, out changed) && !changed && !state.GestureActive);
-        foreach (var key in new[] { Keys.B, Keys.D1, Keys.OemPeriod })
+        foreach (var key in new[] { Keys.B, Keys.D, Keys.K, Keys.D1, Keys.Oemcomma, Keys.OemPeriod })
         {
             check($"Normal input {key} passes through", !state.HandleKey((uint)key, true, true,
                 NavigationModifiers.None, defaults.EmacsShortcuts, out var binding) && binding is null);
@@ -87,6 +93,7 @@ internal static class EmacsTests
             old.LongPressMilliseconds == 850 && old.EmacsShortcuts.ControlB);
         check("Null shortcut settings are normalized", JsonSerializer.Deserialize<AppSettings>("{\"EmacsShortcuts\":null}")!.Normalize().EmacsShortcuts.ControlB);
         var custom = old with { EmacsEnabled = true, ShowModeChangeOverlay = false,
+            EmacsControlSide = ModifierSideSelection.Left, EmacsAltSide = ModifierSideSelection.Right,
             EmacsShortcuts = defaults.EmacsShortcuts.WithEnabled(EmacsShortcut.ControlA, false).WithEnabled(EmacsShortcut.AltF, false) };
         check("Settings JSON round trips all options", JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(custom)) == custom);
 
@@ -116,7 +123,7 @@ internal static class EmacsTests
         }));
 
         var inputFactory = typeof(AltInputService).GetMethod("CreateVirtualKeyInput", BindingFlags.Static | BindingFlags.NonPublic)!;
-        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Home, Keys.End, Keys.RControlKey, Keys.RMenu })
+        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Home, Keys.End, Keys.Delete, Keys.RControlKey, Keys.RMenu })
         {
             var input = (NativeMethods.Input)inputFactory.Invoke(null, [(ushort)key, false])!;
             check($"{key} injection uses extended virtual key ABI", input.Type == NativeMethods.InputKeyboard &&
@@ -138,14 +145,29 @@ internal static class EmacsTests
                 .Select(page => page.Text).SequenceEqual(new[] { "Alt設定", "Emacs設定", "表示設定" }));
             var feature = controls.OfType<CheckBox>().Single(box => box.Text.StartsWith("CapsLock"));
             var shortcuts = controls.OfType<CheckBox>().Where(box => EmacsBindings.All.Any(binding => binding.Label == box.Text)).ToArray();
-            check("Settings has eight individual shortcut controls", shortcuts.Length == 8 && shortcuts.All(box => box.Enabled));
+            check("Settings has thirteen individual shortcut controls", shortcuts.Length == 13 && shortcuts.All(box => box.Enabled));
+            var controlSide = controls.OfType<ComboBox>().Single(box => box.Name == "EmacsControlSide");
+            var altSide = controls.OfType<ComboBox>().Single(box => box.Name == "EmacsAltSide");
+            check("Side selectors display left, right and both", controlSide.Items.Cast<string>().SequenceEqual(new[] { "左", "右", "両方" }) &&
+                altSide.Items.Cast<string>().SequenceEqual(new[] { "左", "右", "両方" }));
+            check("Side selectors load independent saved values", controlSide.SelectedIndex == 0 && altSide.SelectedIndex == 1);
             feature.Checked = false;
             check("Feature off disables controls but retains their selections", shortcuts.All(box => !box.Enabled) &&
                 form.CreateSettings(custom).EmacsShortcuts == custom.EmacsShortcuts && !form.CreateSettings(custom).EmacsEnabled);
+            check("Feature off retains side values while disabling inputs", !controlSide.Enabled && !altSide.Enabled &&
+                form.CreateSettings(custom).EmacsControlSide == custom.EmacsControlSide && form.CreateSettings(custom).EmacsAltSide == custom.EmacsAltSide);
             feature.Checked = true;
             var ctrlA = shortcuts.Single(box => box.Text.StartsWith("Ctrl+A"));
             ctrlA.Checked = true;
             check("Individual UI selection is saved", form.CreateSettings(custom).EmacsShortcuts.ControlA);
+            controlSide.SelectedIndex = 1;
+            altSide.SelectedIndex = 2;
+            check("Side selector changes are saved independently", form.CreateSettings(custom).EmacsControlSide == ModifierSideSelection.Right &&
+                form.CreateSettings(custom).EmacsAltSide == ModifierSideSelection.Both);
+            var ctrlD = shortcuts.Single(box => box.Text.StartsWith("Ctrl+D"));
+            ctrlD.Checked = false;
+            check("New delete shortcut can be disabled individually in UI", !form.CreateSettings(custom).EmacsShortcuts.ControlD &&
+                form.CreateSettings(custom).EmacsShortcuts.ControlK && form.CreateSettings(custom).EmacsShortcuts.AltD);
             using var overlay = new ModeOverlayForm();
             var flags = BindingFlags.Instance | BindingFlags.NonPublic;
             var parameters = (CreateParams)typeof(ModeOverlayForm).GetProperty("CreateParams", flags)!.GetValue(overlay)!;

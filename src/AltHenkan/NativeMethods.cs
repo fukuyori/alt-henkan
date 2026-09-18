@@ -24,6 +24,8 @@ internal static class NativeMethods
     internal const int WmMouseHWheel = 0x020E;
 
     internal const uint VkShift = 0x10;
+    internal const uint VkLShift = 0xA0;
+    internal const uint VkRShift = 0xA1;
     internal const uint VkControl = 0x11;
     internal const uint VkCapsLock = 0x14;
     internal const uint VkLControl = 0xA2;

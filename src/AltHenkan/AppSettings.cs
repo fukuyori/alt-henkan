@@ -20,11 +20,17 @@ internal sealed record AppSettings
 
     public EmacsShortcutSettings EmacsShortcuts { get; init; } = new();
 
+    public ModifierSideSelection EmacsControlSide { get; init; } = ModifierSideSelection.Both;
+
+    public ModifierSideSelection EmacsAltSide { get; init; } = ModifierSideSelection.Both;
+
     public AppSettings Normalize()
     {
         return this with
         {
             EmacsShortcuts = EmacsShortcuts ?? new EmacsShortcutSettings(),
+            EmacsControlSide = Enum.IsDefined(EmacsControlSide) ? EmacsControlSide : ModifierSideSelection.Both,
+            EmacsAltSide = Enum.IsDefined(EmacsAltSide) ? EmacsAltSide : ModifierSideSelection.Both,
             LongPressMilliseconds = Math.Clamp(
                 LongPressMilliseconds,
                 MinimumLongPressMilliseconds,

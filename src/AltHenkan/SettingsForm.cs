@@ -7,6 +7,8 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _longPressMillisecondsInput;
     private readonly CheckBox _emacsEnabledCheckBox;
     private readonly CheckBox _showModeOverlayCheckBox;
+    private readonly ComboBox _emacsControlSideInput;
+    private readonly ComboBox _emacsAltSideInput;
     private readonly Dictionary<EmacsShortcut, CheckBox> _shortcutCheckBoxes = [];
 
     public SettingsForm(AppSettings settings)
@@ -49,13 +51,16 @@ internal sealed class SettingsForm : Form
         _emacsEnabledCheckBox = Option("CapsLockによるEmacsモード切り替えを有効にする", settings.EmacsEnabled);
         emacsPage.Controls.Add(_emacsEnabledCheckBox);
         emacsPage.Controls.Add(Description("CapsLockで通常／Emacsを切り替えます。文字入力は通常どおりです。\n機能OFF時はCapsLock本来の大文字固定に戻ります。\nEmacsモード中、ONの操作だけを変換します。OFFの操作はそのまま渡します。"));
+        _emacsControlSideInput = AddSideOption(emacsPage, "Ctrlの対象：", "EmacsControlSide", settings.EmacsControlSide);
+        _emacsAltSideInput = AddSideOption(emacsPage, "Altの対象：", "EmacsAltSide", settings.EmacsAltSide);
+        emacsPage.Controls.Add(Description("左右の指定はモード全体で共通です。「両方」は左右どちらでも使えます。\n対象外の側は通常の操作を通します。Alt単独のIME切り替えは変更しません。"));
         foreach (var binding in EmacsBindings.All)
         {
             var checkBox = Option(binding.Label, settings.EmacsShortcuts.IsEnabled(binding.Shortcut));
             _shortcutCheckBoxes.Add(binding.Shortcut, checkBox);
             emacsPage.Controls.Add(checkBox);
         }
-        emacsPage.Controls.Add(Description("例：Ctrl+Aの全選択、Ctrl+Pの印刷などは移動操作に置き換わります。\nShiftや他の修飾キーを追加した組み合わせは変換しません。"));
+        emacsPage.Controls.Add(Description("ONの操作はアプリ本来のショートカットより優先します。\nAlt+<／Alt+>はUS配列のAlt+Shift+,／Alt+Shift+.です。\nこの2種類以外は、Shiftや他の修飾キーを追加すると変換しません。\n削除はクリップボードを変更しません。実際の動作は対象アプリに従います。"));
         _emacsEnabledCheckBox.CheckedChanged += (_, _) => UpdateShortcutControls();
         UpdateShortcutControls();
 
@@ -100,6 +105,25 @@ internal sealed class SettingsForm : Form
         Text = text, AutoSize = true, Margin = new Padding(0, 0, 0, 14)
     };
 
+    private static ComboBox AddSideOption(FlowLayoutPanel page, string label, string name, ModifierSideSelection selection)
+    {
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
+        row.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 6, 8, 0) });
+        var input = new ComboBox { Name = name, DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
+        input.Items.AddRange(["左", "右", "両方"]);
+        input.SelectedIndex = selection switch { ModifierSideSelection.Left => 0, ModifierSideSelection.Right => 1, _ => 2 };
+        row.Controls.Add(input);
+        page.Controls.Add(row);
+        return input;
+    }
+
+    private static ModifierSideSelection ReadSideOption(ComboBox input) => input.SelectedIndex switch
+    {
+        0 => ModifierSideSelection.Left,
+        1 => ModifierSideSelection.Right,
+        _ => ModifierSideSelection.Both
+    };
+
     private static CheckBox Option(string text, bool enabled) => new()
     {
         Text = text, Checked = enabled, AutoSize = true, Margin = new Padding(0, 0, 0, 10)
@@ -107,6 +131,8 @@ internal sealed class SettingsForm : Form
 
     private void UpdateShortcutControls()
     {
+        _emacsControlSideInput.Enabled = _emacsEnabledCheckBox.Checked;
+        _emacsAltSideInput.Enabled = _emacsEnabledCheckBox.Checked;
         foreach (var checkBox in _shortcutCheckBoxes.Values)
         {
             checkBox.Enabled = _emacsEnabledCheckBox.Checked;
@@ -127,7 +153,9 @@ internal sealed class SettingsForm : Form
             LongPressMilliseconds = decimal.ToInt32(_longPressMillisecondsInput.Value),
             EmacsEnabled = _emacsEnabledCheckBox.Checked,
             ShowModeChangeOverlay = _showModeOverlayCheckBox.Checked,
-            EmacsShortcuts = shortcuts
+            EmacsShortcuts = shortcuts,
+            EmacsControlSide = ReadSideOption(_emacsControlSideInput),
+            EmacsAltSide = ReadSideOption(_emacsAltSideInput)
         };
     }
 }

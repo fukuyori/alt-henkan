@@ -6,6 +6,7 @@ using System.Diagnostics;
 var failures = new List<string>();
 var testsRun = 0;
 EmacsTests.Run((name, passed) => Check(name, true, passed));
+EmacsExpansionTests.Run((name, passed) => Check(name, true, passed));
 
 Check(
     "Short press sends conversion",

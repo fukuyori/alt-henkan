@@ -8,7 +8,7 @@ internal static class NavigationInputPlan
         EmacsBinding binding, IReadOnlyList<ushort> nativeModifiersDown)
     {
         var result = new List<NavigationKeyStroke>();
-        // Ctrl/Alt must not modify the translated arrow (Ctrl+B is Left, not Ctrl+Left).
+        // Release native Ctrl/Alt/Shift so they do not modify the translated operation.
         foreach (var modifier in nativeModifiersDown)
         {
             result.Add(new(modifier, true));
@@ -16,6 +16,14 @@ internal static class NavigationInputPlan
         if (binding.TargetControl)
         {
             result.Add(new((ushort)Keys.LControlKey, false));
+        }
+        if (binding.Action == EmacsInputAction.DeleteToLineEnd)
+        {
+            // At line end Shift+End selects nothing, so Delete joins the next line.
+            result.Add(new((ushort)Keys.LShiftKey, false));
+            result.Add(new((ushort)Keys.End, false));
+            result.Add(new((ushort)Keys.End, true));
+            result.Add(new((ushort)Keys.LShiftKey, true));
         }
         result.Add(new(binding.TargetKey, false));
         result.Add(new(binding.TargetKey, true));
