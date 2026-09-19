@@ -12,8 +12,14 @@ internal static class EmacsExpansionTests
         check("Legacy shortcut flags are retained and new operations default on", !legacy.EmacsShortcuts.ControlA && legacy.EmacsShortcuts.ControlD &&
             legacy.EmacsShortcuts.ControlK && legacy.EmacsShortcuts.AltLess && legacy.EmacsShortcuts.AltGreater && legacy.EmacsShortcuts.AltD);
         check("Legacy side selections default to both", legacy.EmacsControlSide == ModifierSideSelection.Both && legacy.EmacsAltSide == ModifierSideSelection.Both);
+        check("Legacy settings default to normal initial mode", legacy.EmacsInitialMode == EmacsInitialMode.Normal && !legacy.InitialEmacsActive);
         var invalid = (defaults with { EmacsControlSide = (ModifierSideSelection)99, EmacsAltSide = (ModifierSideSelection)(-1) }).Normalize();
         check("Invalid side settings normalize to both", invalid.EmacsControlSide == ModifierSideSelection.Both && invalid.EmacsAltSide == ModifierSideSelection.Both);
+        check("Invalid initial mode normalizes to normal", (defaults with { EmacsInitialMode = (EmacsInitialMode)99 }).Normalize().EmacsInitialMode == EmacsInitialMode.Normal);
+        check("App-wide disabled setting overrides Emacs initial mode", !(defaults with
+        {
+            Enabled = false, EmacsEnabled = true, EmacsInitialMode = EmacsInitialMode.Emacs
+        }).InitialEmacsActive);
 
         foreach (var binding in EmacsBindings.All)
         {

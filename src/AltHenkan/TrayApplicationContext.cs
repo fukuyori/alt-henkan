@@ -17,6 +17,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext()
     {
         _settings = _settingsStore.Load();
+        _emacsActive = _settings.InitialEmacsActive;
         _inputService = new AltInputService(_settings);
         _uiDispatcher = new Control();
         _ = _uiDispatcher.Handle;

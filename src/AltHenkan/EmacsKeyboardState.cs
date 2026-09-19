@@ -12,9 +12,12 @@ internal sealed class EmacsKeyboardState
     public bool GestureActive => _capsLockCaptured || _capturedKeys.Count > 0;
 
     public bool Disable()
+        => SetActive(false);
+
+    public bool SetActive(bool active)
     {
-        var changed = Active;
-        Active = false;
+        var changed = Active != active;
+        Active = active;
         // Keep captured key-ups paired even if settings change while a key is held.
         return changed;
     }

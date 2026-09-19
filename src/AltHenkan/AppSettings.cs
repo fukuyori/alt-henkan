@@ -1,5 +1,7 @@
 namespace AltHenkan;
 
+internal enum EmacsInitialMode { Normal, Emacs }
+
 internal sealed record AppSettings
 {
     internal const int DefaultLongPressMilliseconds = 600;
@@ -16,6 +18,8 @@ internal sealed record AppSettings
 
     public bool EmacsEnabled { get; init; }
 
+    public EmacsInitialMode EmacsInitialMode { get; init; } = EmacsInitialMode.Normal;
+
     public bool ShowModeChangeOverlay { get; init; } = true;
 
     public EmacsShortcutSettings EmacsShortcuts { get; init; } = new();
@@ -24,11 +28,14 @@ internal sealed record AppSettings
 
     public ModifierSideSelection EmacsAltSide { get; init; } = ModifierSideSelection.Both;
 
+    internal bool InitialEmacsActive => Enabled && EmacsEnabled && EmacsInitialMode == EmacsInitialMode.Emacs;
+
     public AppSettings Normalize()
     {
         return this with
         {
             EmacsShortcuts = EmacsShortcuts ?? new EmacsShortcutSettings(),
+            EmacsInitialMode = Enum.IsDefined(EmacsInitialMode) ? EmacsInitialMode : EmacsInitialMode.Normal,
             EmacsControlSide = Enum.IsDefined(EmacsControlSide) ? EmacsControlSide : ModifierSideSelection.Both,
             EmacsAltSide = Enum.IsDefined(EmacsAltSide) ? EmacsAltSide : ModifierSideSelection.Both,
             LongPressMilliseconds = Math.Clamp(

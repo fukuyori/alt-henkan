@@ -8,7 +8,17 @@ internal static class EmacsTests
     public static void Run(Action<string, bool> check)
     {
         var defaults = new AppSettings();
-        check("Emacs is opt-in and mode overlay defaults on", !defaults.EmacsEnabled && defaults.ShowModeChangeOverlay);
+        check("Emacs is opt-in, starts normal and mode overlay defaults on", !defaults.EmacsEnabled &&
+            defaults.EmacsInitialMode == EmacsInitialMode.Normal && defaults.ShowModeChangeOverlay);
+        var initialState = new EmacsKeyboardState();
+        check("Selected Emacs initial mode activates state", initialState.SetActive((defaults with
+        {
+            Enabled = true, EmacsEnabled = true, EmacsInitialMode = EmacsInitialMode.Emacs
+        }).InitialEmacsActive) && initialState.Active);
+        check("Feature off overrides selected Emacs initial mode", initialState.SetActive((defaults with
+        {
+            Enabled = true, EmacsEnabled = false, EmacsInitialMode = EmacsInitialMode.Emacs
+        }).InitialEmacsActive) && !initialState.Active);
         var expected = new (EmacsShortcut Shortcut, Keys Source, NavigationModifiers Modifiers, Keys Target, bool Control)[]
         {
             (EmacsShortcut.ControlB, Keys.B, NavigationModifiers.Control, Keys.Left, false),
@@ -92,7 +102,7 @@ internal static class EmacsTests
         check("Old settings retain Alt options and default Emacs off", !old.EmacsEnabled && !old.LeftAltLongPressEnabled &&
             old.LongPressMilliseconds == 850 && old.EmacsShortcuts.ControlB);
         check("Null shortcut settings are normalized", JsonSerializer.Deserialize<AppSettings>("{\"EmacsShortcuts\":null}")!.Normalize().EmacsShortcuts.ControlB);
-        var custom = old with { EmacsEnabled = true, ShowModeChangeOverlay = false,
+        var custom = old with { EmacsEnabled = true, EmacsInitialMode = EmacsInitialMode.Emacs, ShowModeChangeOverlay = false,
             EmacsControlSide = ModifierSideSelection.Left, EmacsAltSide = ModifierSideSelection.Right,
             EmacsShortcuts = defaults.EmacsShortcuts.WithEnabled(EmacsShortcut.ControlA, false).WithEnabled(EmacsShortcut.AltF, false) };
         check("Settings JSON round trips all options", JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(custom)) == custom);
@@ -148,13 +158,17 @@ internal static class EmacsTests
             check("Settings has thirteen individual shortcut controls", shortcuts.Length == 13 && shortcuts.All(box => box.Enabled));
             var controlSide = controls.OfType<ComboBox>().Single(box => box.Name == "EmacsControlSide");
             var altSide = controls.OfType<ComboBox>().Single(box => box.Name == "EmacsAltSide");
+            var initialMode = controls.OfType<ComboBox>().Single(box => box.Name == "EmacsInitialMode");
+            check("Initial mode selector displays normal and Emacs", initialMode.Items.Cast<string>().SequenceEqual(new[] { "通常", "Emacs" }) &&
+                initialMode.SelectedIndex == 1);
             check("Side selectors display left, right and both", controlSide.Items.Cast<string>().SequenceEqual(new[] { "左", "右", "両方" }) &&
                 altSide.Items.Cast<string>().SequenceEqual(new[] { "左", "右", "両方" }));
             check("Side selectors load independent saved values", controlSide.SelectedIndex == 0 && altSide.SelectedIndex == 1);
             feature.Checked = false;
             check("Feature off disables controls but retains their selections", shortcuts.All(box => !box.Enabled) &&
                 form.CreateSettings(custom).EmacsShortcuts == custom.EmacsShortcuts && !form.CreateSettings(custom).EmacsEnabled);
-            check("Feature off retains side values while disabling inputs", !controlSide.Enabled && !altSide.Enabled &&
+            check("Feature off retains initial mode and side values while disabling inputs", !initialMode.Enabled && !controlSide.Enabled && !altSide.Enabled &&
+                form.CreateSettings(custom).EmacsInitialMode == EmacsInitialMode.Emacs &&
                 form.CreateSettings(custom).EmacsControlSide == custom.EmacsControlSide && form.CreateSettings(custom).EmacsAltSide == custom.EmacsAltSide);
             feature.Checked = true;
             var ctrlA = shortcuts.Single(box => box.Text.StartsWith("Ctrl+A"));
@@ -162,6 +176,8 @@ internal static class EmacsTests
             check("Individual UI selection is saved", form.CreateSettings(custom).EmacsShortcuts.ControlA);
             controlSide.SelectedIndex = 1;
             altSide.SelectedIndex = 2;
+            initialMode.SelectedIndex = 0;
+            check("Initial mode selector change is saved", form.CreateSettings(custom).EmacsInitialMode == EmacsInitialMode.Normal);
             check("Side selector changes are saved independently", form.CreateSettings(custom).EmacsControlSide == ModifierSideSelection.Right &&
                 form.CreateSettings(custom).EmacsAltSide == ModifierSideSelection.Both);
             var ctrlD = shortcuts.Single(box => box.Text.StartsWith("Ctrl+D"));

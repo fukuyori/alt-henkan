@@ -34,6 +34,7 @@ internal sealed class AltInputService : IDisposable
     public AltInputService(AppSettings settings)
     {
         _settings = settings.Normalize();
+        _emacsState.SetActive(_settings.InitialEmacsActive);
         _initialNativeCapsLockOn = (NativeMethods.GetKeyState((int)NativeMethods.VkCapsLock) & 1) != 0;
         _keyboardCallback = KeyboardHookCallback;
         _mouseCallback = MouseHookCallback;
@@ -46,6 +47,7 @@ internal sealed class AltInputService : IDisposable
     private void InitializeHookThread()
     {
         DiagnosticLog.Write($"Dedicated hook thread started: managed thread {Environment.CurrentManagedThreadId}.");
+        DiagnosticLog.Write($"Initial keyboard mode: {(_emacsState.Active ? "Emacs" : "Normal")}.");
         RegisterHooks();
         EnsureNativeCapsLockOff(_initialNativeCapsLockOn);
         _maintenanceTimer = new System.Windows.Forms.Timer { Interval = 1000 };
@@ -109,7 +111,9 @@ internal sealed class AltInputService : IDisposable
             }
             else if (!wasEmacsEnabled)
             {
+                _emacsState.SetActive(_settings.EmacsInitialMode == EmacsInitialMode.Emacs);
                 EnsureNativeCapsLockOff(nativeCapsLockOn);
+                NotifyEmacsModeChanged();
             }
 
             if (wasEnabled && !_settings.Enabled)

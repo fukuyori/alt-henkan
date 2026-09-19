@@ -7,6 +7,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _longPressMillisecondsInput;
     private readonly CheckBox _emacsEnabledCheckBox;
     private readonly CheckBox _showModeOverlayCheckBox;
+    private readonly ComboBox _emacsInitialModeInput;
     private readonly ComboBox _emacsControlSideInput;
     private readonly ComboBox _emacsAltSideInput;
     private readonly Dictionary<EmacsShortcut, CheckBox> _shortcutCheckBoxes = [];
@@ -51,6 +52,8 @@ internal sealed class SettingsForm : Form
         _emacsEnabledCheckBox = Option("CapsLockによるEmacsモード切り替えを有効にする", settings.EmacsEnabled);
         emacsPage.Controls.Add(_emacsEnabledCheckBox);
         emacsPage.Controls.Add(Description("CapsLockで通常／Emacsを切り替えます。文字入力は通常どおりです。\n機能OFF時はCapsLock本来の大文字固定に戻ります。\nEmacsモード中、ONの操作だけを変換します。OFFの操作はそのまま渡します。"));
+        _emacsInitialModeInput = AddInitialModeOption(emacsPage, settings.EmacsInitialMode);
+        emacsPage.Controls.Add(Description("初期モードは、アプリ起動時と機能をOFFからONに戻した時に適用します。"));
         _emacsControlSideInput = AddSideOption(emacsPage, "Ctrlの対象：", "EmacsControlSide", settings.EmacsControlSide);
         _emacsAltSideInput = AddSideOption(emacsPage, "Altの対象：", "EmacsAltSide", settings.EmacsAltSide);
         emacsPage.Controls.Add(Description("左右の指定はモード全体で共通です。「両方」は左右どちらでも使えます。\n対象外の側は通常の操作を通します。Alt単独のIME切り替えは変更しません。"));
@@ -117,6 +120,22 @@ internal sealed class SettingsForm : Form
         return input;
     }
 
+    private static ComboBox AddInitialModeOption(FlowLayoutPanel page, EmacsInitialMode initialMode)
+    {
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 10) };
+        row.Controls.Add(new Label { Text = "初期モード：", AutoSize = true, Margin = new Padding(0, 6, 8, 0) });
+        var input = new ComboBox
+        {
+            Name = "EmacsInitialMode", DropDownStyle = ComboBoxStyle.DropDownList, Width = 130,
+            SelectedIndex = -1
+        };
+        input.Items.AddRange(["通常", "Emacs"]);
+        input.SelectedIndex = initialMode == EmacsInitialMode.Emacs ? 1 : 0;
+        row.Controls.Add(input);
+        page.Controls.Add(row);
+        return input;
+    }
+
     private static ModifierSideSelection ReadSideOption(ComboBox input) => input.SelectedIndex switch
     {
         0 => ModifierSideSelection.Left,
@@ -131,6 +150,7 @@ internal sealed class SettingsForm : Form
 
     private void UpdateShortcutControls()
     {
+        _emacsInitialModeInput.Enabled = _emacsEnabledCheckBox.Checked;
         _emacsControlSideInput.Enabled = _emacsEnabledCheckBox.Checked;
         _emacsAltSideInput.Enabled = _emacsEnabledCheckBox.Checked;
         foreach (var checkBox in _shortcutCheckBoxes.Values)
@@ -152,6 +172,7 @@ internal sealed class SettingsForm : Form
             RightAltLongPressEnabled = _rightAltLongPressCheckBox.Checked,
             LongPressMilliseconds = decimal.ToInt32(_longPressMillisecondsInput.Value),
             EmacsEnabled = _emacsEnabledCheckBox.Checked,
+            EmacsInitialMode = _emacsInitialModeInput.SelectedIndex == 1 ? EmacsInitialMode.Emacs : EmacsInitialMode.Normal,
             ShowModeChangeOverlay = _showModeOverlayCheckBox.Checked,
             EmacsShortcuts = shortcuts,
             EmacsControlSide = ReadSideOption(_emacsControlSideInput),
