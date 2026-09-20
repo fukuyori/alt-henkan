@@ -14,6 +14,8 @@ internal sealed class AltInputService : IDisposable
     private readonly HashSet<uint> _nonAltKeysDown = [];
     private readonly AltState _leftAlt = new(AltSide.Left);
     private readonly AltState _rightAlt = new(AltSide.Right);
+    private readonly DeferredControlState _leftControl = new(ModifierSides.Left);
+    private readonly DeferredControlState _rightControl = new(ModifierSides.Right);
     private readonly EmacsKeyboardState _emacsState = new();
     private readonly bool _initialNativeCapsLockOn;
     private readonly DedicatedMessageLoop _hookThread;
@@ -191,6 +193,8 @@ internal sealed class AltInputService : IDisposable
             return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
         }
 
+        var isExtended = (data.Flags & NativeMethods.LlkhfExtended) != 0;
+
         var emacsEnabled = _settings.Enabled && _settings.EmacsEnabled;
         if (data.VirtualKeyCode == NativeMethods.VkCapsLock &&
             _emacsState.HandleCapsLock(isKeyDown, emacsEnabled, out var modeChanged))
@@ -201,6 +205,18 @@ internal sealed class AltInputService : IDisposable
                 NotifyEmacsModeChanged();
             }
             return 1;
+        }
+
+        if (data.VirtualKeyCode == NativeMethods.VkLControl ||
+            data.VirtualKeyCode == NativeMethods.VkControl && !isExtended)
+        {
+            return HandleControlEvent(_leftControl, code, wParam, lParam, data, isKeyDown);
+        }
+
+        if (data.VirtualKeyCode == NativeMethods.VkRControl ||
+            data.VirtualKeyCode == NativeMethods.VkControl && isExtended)
+        {
+            return HandleControlEvent(_rightControl, code, wParam, lParam, data, isKeyDown);
         }
 
         var modifiers = isKeyDown && emacsEnabled && _emacsState.Active && EmacsBindings.IsSourceKey(data.VirtualKeyCode)
@@ -215,6 +231,10 @@ internal sealed class AltInputService : IDisposable
                 {
                     ConsumePendingAltGestures();
                 }
+                if ((binding.Modifiers & NavigationModifiers.Control) != 0)
+                {
+                    ConsumePendingControlGestures();
+                }
                 SendNavigation(binding);
             }
             return 1;
@@ -225,7 +245,8 @@ internal sealed class AltInputService : IDisposable
             return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
         }
 
-        var isExtended = (data.Flags & NativeMethods.LlkhfExtended) != 0;
+        PromotePendingControlsToNative();
+
         if (data.VirtualKeyCode == NativeMethods.VkLMenu ||
             data.VirtualKeyCode == NativeMethods.VkMenu && !isExtended)
         {
@@ -266,6 +287,67 @@ internal sealed class AltInputService : IDisposable
         }
 
         return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+    }
+
+    private nint HandleControlEvent(
+        DeferredControlState state,
+        int code,
+        nint wParam,
+        nint lParam,
+        NativeMethods.KbdLlHookStruct data,
+        bool isKeyDown)
+    {
+        if (isKeyDown)
+        {
+            if (state.IsDown)
+            {
+                return state.OriginalDownPassed
+                    ? NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam)
+                    : 1;
+            }
+
+            state.Start(data.ScanCode, (data.Flags & NativeMethods.LlkhfExtended) != 0);
+            if (!CanDeferControl(state) || IsAnyOtherInputDownForControl())
+            {
+                state.OriginalDownPassed = true;
+                return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+            }
+
+            var otherControl = state.Side == ModifierSides.Left ? _rightControl : _leftControl;
+            if (otherControl.IsDown)
+            {
+                PromotePendingControlToNative(otherControl);
+                PromotePendingControlToNative(state);
+            }
+            return 1;
+        }
+
+        if (!state.IsDown)
+        {
+            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+        }
+
+        state.IsDown = false;
+        if (state.OriginalDownPassed)
+        {
+            state.Reset();
+            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+        }
+
+        if (state.NativeDownSent)
+        {
+            SendControl(state, keyUp: true);
+            state.Reset();
+            return 1;
+        }
+
+        if (!state.ConsumedByEmacs)
+        {
+            SendControl(state, keyUp: false);
+            SendControl(state, keyUp: true);
+        }
+        state.Reset();
+        return 1;
     }
 
     private nint HandleAltEvent(
@@ -401,6 +483,7 @@ internal sealed class AltInputService : IDisposable
     {
         if (code >= 0 && !_disposed && _settings.Enabled && IsMouseInteraction(unchecked((int)wParam)))
         {
+            PromotePendingControlsToNative();
             PromotePendingAltsToNative();
         }
 
@@ -411,6 +494,24 @@ internal sealed class AltInputService : IDisposable
     {
         PromotePendingAltToNative(_leftAlt);
         PromotePendingAltToNative(_rightAlt);
+    }
+
+    private void PromotePendingControlsToNative()
+    {
+        PromotePendingControlToNative(_leftControl);
+        PromotePendingControlToNative(_rightControl);
+    }
+
+    private void PromotePendingControlToNative(DeferredControlState state)
+    {
+        if (!state.IsDown || state.OriginalDownPassed || state.NativeDownSent)
+        {
+            return;
+        }
+
+        SendControl(state, keyUp: false);
+        state.NativeDownSent = true;
+        DiagnosticLog.Write($"{state.Side} Ctrl used with native input; sent Ctrl down.");
     }
 
     private static bool IsMouseInteraction(int message)
@@ -446,6 +547,14 @@ internal sealed class AltInputService : IDisposable
                IsVirtualKeyDown(NativeMethods.VkRWin);
     }
 
+    private bool IsAnyOtherInputDownForControl()
+    {
+        _nonAltKeysDown.RemoveWhere(key => !IsVirtualKeyDown(key));
+        return _nonAltKeysDown.Count > 0 || _leftAlt.IsDown || _rightAlt.IsDown ||
+               IsVirtualKeyDown(NativeMethods.VkShift) ||
+               IsVirtualKeyDown(NativeMethods.VkLWin) || IsVirtualKeyDown(NativeMethods.VkRWin);
+    }
+
     private static bool IsVirtualKeyDown(uint virtualKey)
     {
         return (NativeMethods.GetAsyncKeyState((int)virtualKey) & 0x8000) != 0;
@@ -454,7 +563,7 @@ internal sealed class AltInputService : IDisposable
     private NavigationModifiers GetNavigationModifiers()
     {
         var result = NavigationModifiers.None;
-        if (IsVirtualKeyDown(NativeMethods.VkControl)) result |= NavigationModifiers.Control;
+        if (GetControlModifierSnapshot().AnyDown) result |= NavigationModifiers.Control;
         if (_leftAlt.IsDown || _rightAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkMenu)) result |= NavigationModifiers.Alt;
         if (IsVirtualKeyDown(NativeMethods.VkShift)) result |= NavigationModifiers.Shift;
         if (IsVirtualKeyDown(NativeMethods.VkLWin) || IsVirtualKeyDown(NativeMethods.VkRWin)) result |= NavigationModifiers.Windows;
@@ -467,16 +576,49 @@ internal sealed class AltInputService : IDisposable
         if (_rightAlt.IsDown) _rightAlt.ConsumedByEmacs = true;
     }
 
+    private void ConsumePendingControlGestures()
+    {
+        ConsumePendingControlGesture(_leftControl);
+        ConsumePendingControlGesture(_rightControl);
+    }
+
+    private void ConsumePendingControlGesture(DeferredControlState state)
+    {
+        if (!state.IsDown)
+        {
+            return;
+        }
+
+        if (state.OriginalDownPassed || state.NativeDownSent)
+        {
+            SendControl(state, keyUp: true);
+            DiagnosticLog.Write($"{state.Side} Ctrl returned to deferred state for Emacs input.");
+        }
+
+        state.OriginalDownPassed = false;
+        state.NativeDownSent = false;
+        state.ConsumedByEmacs = true;
+    }
+
+    private bool CanDeferControl(DeferredControlState state) =>
+        _settings.Enabled && _settings.EmacsEnabled && _emacsState.Active &&
+        EmacsSideFilter.Allows(state.Side, _settings.EmacsControlSide);
+
     private EmacsSideFilter GetEmacsSideFilter()
     {
-        var control = ModifierSides.None;
+        var control = GetControlModifierSnapshot().Sides;
         var alt = ModifierSides.None;
-        if (IsVirtualKeyDown(NativeMethods.VkLControl)) control |= ModifierSides.Left;
-        if (IsVirtualKeyDown(NativeMethods.VkRControl)) control |= ModifierSides.Right;
         if (_leftAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkLMenu)) alt |= ModifierSides.Left;
         if (_rightAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkRMenu)) alt |= ModifierSides.Right;
         return new(control, alt, _settings.EmacsControlSide, _settings.EmacsAltSide);
     }
+
+    private ControlModifierSnapshot GetControlModifierSnapshot() => new(
+        _leftControl.IsDown,
+        _rightControl.IsDown,
+        IsVirtualKeyDown(NativeMethods.VkControl),
+        IsVirtualKeyDown(NativeMethods.VkLControl),
+        IsVirtualKeyDown(NativeMethods.VkRControl));
 
     private static bool IsShiftKey(uint key) => key is NativeMethods.VkShift or NativeMethods.VkLShift or NativeMethods.VkRShift;
 
@@ -493,8 +635,10 @@ internal sealed class AltInputService : IDisposable
     private void SendNavigation(EmacsBinding binding)
     {
         var modifiers = new List<ushort>();
-        if (IsVirtualKeyDown(NativeMethods.VkLControl)) modifiers.Add((ushort)NativeMethods.VkLControl);
-        if (IsVirtualKeyDown(NativeMethods.VkRControl)) modifiers.Add((ushort)NativeMethods.VkRControl);
+        if (IsVirtualKeyDown(NativeMethods.VkLControl) && !_leftControl.HiddenFromForeground)
+            modifiers.Add((ushort)NativeMethods.VkLControl);
+        if (IsVirtualKeyDown(NativeMethods.VkRControl) && !_rightControl.HiddenFromForeground)
+            modifiers.Add((ushort)NativeMethods.VkRControl);
         if (IsVirtualKeyDown(NativeMethods.VkLShift)) modifiers.Add((ushort)NativeMethods.VkLShift);
         if (IsVirtualKeyDown(NativeMethods.VkRShift)) modifiers.Add((ushort)NativeMethods.VkRShift);
         if (_leftAlt.IsDown && (_leftAlt.OriginalDownPassed || _leftAlt.NativeDownSent))
@@ -503,7 +647,7 @@ internal sealed class AltInputService : IDisposable
             modifiers.Add((ushort)NativeMethods.VkRMenu);
 
         var plan = NavigationInputPlan.Create(binding, modifiers);
-        SendKeyboardInputs(plan.Select(stroke => CreateVirtualKeyInput(stroke.VirtualKey, stroke.KeyUp)).ToArray());
+        SendKeyboardInputs(plan.Select(stroke => CreateNavigationKeyInput(stroke.VirtualKey, stroke.KeyUp)).ToArray());
         DiagnosticLog.Write($"Emacs operation: {binding.Shortcut}.");
     }
 
@@ -553,6 +697,12 @@ internal sealed class AltInputService : IDisposable
             CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp));
     }
 
+    private void SendControl(DeferredControlState state, bool keyUp)
+    {
+        SendKeyboardInputs(
+            CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp));
+    }
+
     private void SendKeyboardInputs(params NativeMethods.Input[] inputs)
     {
         if (NativeMethods.SendKeyboardInputs(inputs, out var errorCode))
@@ -580,14 +730,28 @@ internal sealed class AltInputService : IDisposable
                 {
                     VirtualKey = virtualKey,
                     Flags = (keyUp ? NativeMethods.KeyeventfKeyUp : 0) |
-                        (virtualKey is (ushort)Keys.Left or (ushort)Keys.Right or (ushort)Keys.Up or (ushort)Keys.Down or
-                            (ushort)Keys.Home or (ushort)Keys.End or (ushort)Keys.Delete or (ushort)Keys.RControlKey or (ushort)Keys.RMenu
+                        (IsExtendedVirtualKey(virtualKey)
                             ? NativeMethods.KeyeventfExtendedKey : 0),
                     ExtraInfo = OwnInputMarker
                 }
             }
         };
     }
+
+    private static NativeMethods.Input CreateNavigationKeyInput(ushort virtualKey, bool keyUp)
+    {
+        var mappedScanCode = NativeMethods.MapVirtualKey(virtualKey, NativeMethods.MapvkVkToVscEx);
+        var scanCode = (ushort)(mappedScanCode & 0xFF);
+        var prefix = mappedScanCode & 0xFF00;
+        var isExtended = prefix is 0xE000 or 0xE100 || IsExtendedVirtualKey(virtualKey);
+
+        return CreateScanCodeInput(scanCode, isExtended, keyUp);
+    }
+
+    private static bool IsExtendedVirtualKey(ushort virtualKey) =>
+        virtualKey is (ushort)Keys.Left or (ushort)Keys.Right or (ushort)Keys.Up or (ushort)Keys.Down or
+            (ushort)Keys.Home or (ushort)Keys.End or (ushort)Keys.Delete or
+            (ushort)Keys.RControlKey or (ushort)Keys.RMenu;
 
     private static NativeMethods.Input CreateScanCodeInput(ushort scanCode, bool isExtended, bool keyUp)
     {
@@ -624,6 +788,16 @@ internal sealed class AltInputService : IDisposable
             if (state.IsDown && state.NativeDownSent)
             {
                 SendAlt(state, keyUp: true);
+            }
+
+            state.Reset();
+        }
+
+        foreach (var state in new[] { _leftControl, _rightControl })
+        {
+            if (state.IsDown && state.NativeDownSent)
+            {
+                SendControl(state, keyUp: true);
             }
 
             state.Reset();
@@ -683,7 +857,8 @@ internal sealed class AltInputService : IDisposable
 
             var idleMilliseconds = HookMaintenancePolicy.CalculateIdleMilliseconds(
                 unchecked((uint)Environment.TickCount), info.Time);
-            var gestureActive = _leftAlt.IsDown || _rightAlt.IsDown || _emacsState.GestureActive;
+            var gestureActive = _leftAlt.IsDown || _rightAlt.IsDown ||
+                _leftControl.IsDown || _rightControl.IsDown || _emacsState.GestureActive;
             if (idleMilliseconds < HookMaintenancePolicy.MinimumIdleMilliseconds || gestureActive)
             {
                 return;
@@ -803,6 +978,46 @@ internal sealed class AltInputService : IDisposable
             ConsumedByEmacs = false;
             DeferredShiftChord = false;
             DownAtMilliseconds = 0;
+            ScanCode = 0;
+            IsExtended = false;
+        }
+    }
+
+    private sealed class DeferredControlState(ModifierSides side)
+    {
+        public ModifierSides Side { get; } = side;
+
+        public bool IsDown { get; set; }
+
+        public bool OriginalDownPassed { get; set; }
+
+        public bool NativeDownSent { get; set; }
+
+        public bool ConsumedByEmacs { get; set; }
+
+        public ushort ScanCode { get; private set; }
+
+        public bool IsExtended { get; private set; }
+
+        public bool HiddenFromForeground =>
+            IsDown && !OriginalDownPassed && !NativeDownSent;
+
+        public void Start(uint scanCode, bool isExtended)
+        {
+            IsDown = true;
+            OriginalDownPassed = false;
+            NativeDownSent = false;
+            ConsumedByEmacs = false;
+            ScanCode = checked((ushort)scanCode);
+            IsExtended = isExtended;
+        }
+
+        public void Reset()
+        {
+            IsDown = false;
+            OriginalDownPassed = false;
+            NativeDownSent = false;
+            ConsumedByEmacs = false;
             ScanCode = 0;
             IsExtended = false;
         }

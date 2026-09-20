@@ -41,6 +41,7 @@ internal static class NativeMethods
     internal const uint KeyeventfExtendedKey = 0x0001;
     internal const uint KeyeventfKeyUp = 0x0002;
     internal const uint KeyeventfScanCode = 0x0008;
+    internal const uint MapvkVkToVscEx = 4;
 
     internal delegate nint HookProc(int code, nint wParam, nint lParam);
 
@@ -154,6 +155,11 @@ internal static class NativeMethods
         uint inputCount,
         Input[] inputs,
         int inputSize);
+
+    [DllImport("user32.dll", EntryPoint = "MapVirtualKeyW")]
+    internal static extern uint MapVirtualKey(
+        uint code,
+        uint mapType);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     internal static extern nint GetModuleHandle(string? moduleName);

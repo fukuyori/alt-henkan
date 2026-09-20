@@ -55,6 +55,16 @@ internal static class EmacsTests
             NavigationModifiers.Control | NavigationModifiers.Alt, defaults.EmacsShortcuts) is null);
         check("Ctrl+V remains native", EmacsBindings.Resolve((uint)Keys.V, NavigationModifiers.Control, defaults.EmacsShortcuts) is null);
 
+        var trackedLeftControl = new ControlModifierSnapshot(true, false, false, false, false);
+        check("Tracked left Ctrl is recognized before asynchronous key state updates",
+            trackedLeftControl.AnyDown && trackedLeftControl.Sides == ModifierSides.Left);
+        var trackedRightControl = new ControlModifierSnapshot(false, true, false, false, false);
+        check("Tracked right Ctrl is recognized before asynchronous key state updates",
+            trackedRightControl.AnyDown && trackedRightControl.Sides == ModifierSides.Right);
+        var asynchronousControls = new ControlModifierSnapshot(false, false, true, true, true);
+        check("Asynchronous Ctrl state remains available for native chords",
+            asynchronousControls.AnyDown && asynchronousControls.Sides == ModifierSides.Both);
+
         var state = new EmacsKeyboardState();
         check("Startup mode is normal", !state.Active);
         check("Disabled feature passes native CapsLock", !state.HandleCapsLock(true, false, out var changed) && !changed);
@@ -143,6 +153,23 @@ internal static class EmacsTests
         var imeInput = (NativeMethods.Input)inputFactory.Invoke(null, [JapaneseImeKey.ImeOnVirtualKey, true])!;
         check("Existing IME virtual key encoding remains unchanged", imeInput.Data.Keyboard.VirtualKey == JapaneseImeKey.ImeOnVirtualKey &&
             imeInput.Data.Keyboard.Flags == NativeMethods.KeyeventfKeyUp);
+
+        var navigationInputFactory = typeof(AltInputService).GetMethod("CreateNavigationKeyInput", BindingFlags.Static | BindingFlags.NonPublic)!;
+        foreach (var key in new[] { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Home, Keys.End, Keys.Delete, Keys.RControlKey, Keys.RMenu })
+        {
+            var input = (NativeMethods.Input)navigationInputFactory.Invoke(null, [(ushort)key, false])!;
+            check($"{key} navigation uses an extended hardware scan code", input.Type == NativeMethods.InputKeyboard &&
+                input.Data.Keyboard.VirtualKey == 0 && input.Data.Keyboard.ScanCode != 0 &&
+                input.Data.Keyboard.Flags == (NativeMethods.KeyeventfScanCode | NativeMethods.KeyeventfExtendedKey) &&
+                input.Data.Keyboard.ExtraInfo != 0);
+        }
+        foreach (var key in new[] { Keys.LControlKey, Keys.LShiftKey, Keys.RShiftKey, Keys.LMenu })
+        {
+            var input = (NativeMethods.Input)navigationInputFactory.Invoke(null, [(ushort)key, false])!;
+            check($"{key} navigation uses a non-extended hardware scan code", input.Type == NativeMethods.InputKeyboard &&
+                input.Data.Keyboard.VirtualKey == 0 && input.Data.Keyboard.ScanCode != 0 &&
+                input.Data.Keyboard.Flags == NativeMethods.KeyeventfScanCode && input.Data.Keyboard.ExtraInfo != 0);
+        }
 
         using var uiThread = new DedicatedMessageLoop(() => { }, () => { });
         uiThread.InvokeAsync(() =>
