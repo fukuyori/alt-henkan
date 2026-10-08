@@ -1,0 +1,9 @@
+Read-only interactive-desktop GetAsyncKeyState samples (high bit):
+2026-10-08T14:02:04.1263803+09:00: 0xF3; foreground window available.
+2026-10-08T14:02:05.1543015+09:00: 0xBF, 0xF3; foreground window available.
+SDK 10.0.26100.0 um/Ime.h:73 defines VK_DBE_SBCSCHAR = 0xF3.
+SDK um/WinUser.h:759 also names 0xF3 VK_OEM_AUTO.
+Current log records otherKeysCount=1; key identity is not logged.
+AltInputService.MaintainHooks scans 1..254 and postpones renewal for any high bit.
+AltInputService.IsAnyNonAltKeyDown retains tracked entries whose high bit is set.
+The identity of the one retained in-process key has NOT been directly observed.

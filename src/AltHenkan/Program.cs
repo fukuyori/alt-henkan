@@ -20,7 +20,7 @@ internal static class Program
             return;
         }
 
-        DiagnosticLog.Initialize(args.Contains("--diagnostics", StringComparer.OrdinalIgnoreCase));
+        DiagnosticLog.Initialize(verbose: args.Contains("--diagnostics", StringComparer.OrdinalIgnoreCase));
         ApplicationConfiguration.Initialize();
         DiagnosticLog.Write("Windows Forms initialized.");
 

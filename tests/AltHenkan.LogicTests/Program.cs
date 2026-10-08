@@ -7,6 +7,9 @@ var failures = new List<string>();
 var testsRun = 0;
 EmacsTests.Run((name, passed) => Check(name, true, passed));
 EmacsExpansionTests.Run((name, passed) => Check(name, true, passed));
+MissedKeyUpTests.Run((name, passed) => Check(name, true, passed));
+DiagnosticTests.Run((name, passed) => Check(name, true, passed));
+KeyHoldPolicyTests.Run((name, passed) => Check(name, true, passed));
 
 Check(
     "Short press sends conversion",
@@ -202,8 +205,13 @@ if (args.Contains("--native-hooks", StringComparer.Ordinal))
     Check("Native keyboard and mouse hooks can recover after removal", true, renewed);
 
     var generationBeforeMaintenance = 0;
+    nuint layoutBeforeMaintenance = 0;
+    var widthStateBeforeMaintenance = false;
     hookLoop.InvokeAsync(() =>
     {
+        layoutBeforeMaintenance = (nuint)serviceType.GetMethod("GetForegroundKeyboardLayout",
+            BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
+        widthStateBeforeMaintenance = (NativeMethods.GetAsyncKeyState(0xF3) & 0x8000) != 0;
         generationBeforeMaintenance = (int)serviceType.GetField("_hookGeneration", flags)!.GetValue(service)!;
         serviceType.GetMethod("UnregisterHooks", flags)!.Invoke(service, null);
         serviceType.GetField("_lastRefreshAtMilliseconds", flags)!.SetValue(service,
@@ -241,6 +249,45 @@ if (args.Contains("--native-hooks", StringComparer.Ordinal))
         Console.Error.WriteLine($"Native maintenance timeout: maximum OS idle={maximumObservedIdle} ms, last OS idle={lastObservedIdle} ms, held virtual keys observed at idle=[{string.Join(", ", heldKeysAtIdle.Order().Select(key => $"0x{key:X2}"))}].");
     }
     Check("Maintenance timer automatically reinstalls removed hooks at idle", true, restoredByTimer);
+    var widthStateAfterMaintenance = (NativeMethods.GetAsyncKeyState(0xF3) & 0x8000) != 0;
+    Console.WriteLine($"Native renewal observation: foreground HKL before=0x{layoutBeforeMaintenance:X}, " +
+        $"0xF3 down before={widthStateBeforeMaintenance}, after={widthStateAfterMaintenance}, timer restored={restoredByTimer}.");
+
+    // Exercise diagnostics on the real hook thread while a captured key blocks renewal.
+    // Enabled remains false; this test never injects keyboard input.
+    var diagnosticDirectory = Path.Combine(Path.GetTempPath(), "AltHenkan-NativeDiagnostics-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(diagnosticDirectory);
+    var diagnosticPath = Path.Combine(diagnosticDirectory, "native.log");
+    try
+    {
+        DiagnosticLog.Initialize(path: diagnosticPath);
+        var blockedRenewal = false;
+        hookLoop.InvokeAsync(() =>
+        {
+            var state = (EmacsKeyboardState)serviceType.GetField("_emacsState", flags)!.GetValue(service)!;
+            state.SetActive(true);
+            state.HandleKey((uint)Keys.F, true, true, NavigationModifiers.Control,
+                new EmacsShortcutSettings(), out _);
+            serviceType.GetField("_refreshRequested", flags)!.SetValue(service, true);
+            serviceType.GetField("_lastStatusAtMilliseconds", flags)!.SetValue(service, Environment.TickCount64 - 30_000);
+            var generation = (int)serviceType.GetField("_hookGeneration", flags)!.GetValue(service)!;
+            serviceType.GetMethod("MaintainHooks", flags)!.Invoke(service, null);
+            blockedRenewal = (int)serviceType.GetField("_hookGeneration", flags)!.GetValue(service)! == generation;
+        }).WaitAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+        service.Dispose();
+        DiagnosticLog.Shutdown();
+        var diagnosticLines = File.ReadAllLines(diagnosticPath);
+        Check("Native periodic diagnostics survive the retained-gesture early return", true,
+            blockedRenewal && diagnosticLines.Any(line => line.Contains("Hook status (periodic)") &&
+                line.Contains("capturedKeys=1") && line.Contains("refreshRequested=True")));
+        Check("Native shutdown records captured state before cleanup", true,
+            diagnosticLines.Any(line => line.Contains("Hook status (shutdown)") && line.Contains("capturedKeys=1")));
+    }
+    finally
+    {
+        DiagnosticLog.Shutdown();
+        Directory.Delete(diagnosticDirectory, recursive: true);
+    }
     service.Dispose();
     Check("Native service shutdown joins the hook thread", false, hookLoop.IsAlive);
     Check("Native shutdown clears keyboard hook", (nint)0,

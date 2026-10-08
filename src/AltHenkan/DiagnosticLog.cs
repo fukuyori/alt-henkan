@@ -1,10 +1,10 @@
-using System.Text;
-
 namespace AltHenkan;
 
 internal static class DiagnosticLog
 {
     private static QueuedDiagnosticWriter? _writer;
+    public static bool VerboseEnabled { get; private set; }
+    public static int DroppedEntries => Volatile.Read(ref _writer)?.DroppedEntries ?? 0;
 
     // %LOCALAPPDATA%\AltHenkan: the installed executable lives under Program Files,
     // which is not writable by a normal user.
@@ -13,21 +13,14 @@ internal static class DiagnosticLog
         "AltHenkan",
         "AltHenkan-diagnostics.log");
 
-    public static void Initialize(bool enabled)
+    public static void Initialize(bool verbose = false, string? path = null)
     {
         Shutdown();
-        if (!enabled)
-        {
-            return;
-        }
-
-        _writer = new QueuedDiagnosticWriter(() =>
-        {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
-            return new StreamWriter(Path, append: false,
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)) { AutoFlush = true };
-        });
-        Write("Diagnostic logging started.");
+        VerboseEnabled = verbose;
+        _writer = new QueuedDiagnosticWriter(() => new RotatingDiagnosticWriter(path ?? Path));
+        Write($"Session started: id={Guid.NewGuid():N}, version={typeof(DiagnosticLog).Assembly.GetName().Version}, " +
+            $"pid={Environment.ProcessId}, verbose={verbose}, OS={Environment.OSVersion.Version}, " +
+            $"64bit={Environment.Is64BitProcess}.");
     }
 
     public static void Write(string message)
@@ -35,5 +28,16 @@ internal static class DiagnosticLog
         Volatile.Read(ref _writer)?.TryWrite(message);
     }
 
-    public static void Shutdown() => Interlocked.Exchange(ref _writer, null)?.Dispose();
+    public static void WriteVerbose(string message)
+    {
+        if (VerboseEnabled) Write(message);
+    }
+
+    public static void Shutdown()
+    {
+        var writer = Interlocked.Exchange(ref _writer, null);
+        if (writer is null) return;
+        writer.TryWrite("Session ended.");
+        writer.Dispose();
+    }
 }

@@ -10,6 +10,8 @@ internal sealed class EmacsKeyboardState
 
     public bool Active { get; private set; }
     public bool GestureActive => _capsLockCaptured || _capturedKeys.Count > 0;
+    public int CapturedKeyCount => _capturedKeys.Count;
+    public bool CapsLockCaptured => _capsLockCaptured;
 
     public bool Disable()
         => SetActive(false);
