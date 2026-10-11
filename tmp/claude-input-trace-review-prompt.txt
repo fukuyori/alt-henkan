@@ -1,0 +1,781 @@
+現在の作業ツリーの診断ログ強化をコードレビューしてください。レビューのみです。ファイルの変更、コミット、ビルド、プロセス操作はしないでください。Read/Grep/Globでこのリポジトリの実装・テストを確認してください。
+
+背景: Alt Henkan 使用中に Windows 全体の入力がおかしくなり、アプリ終了で戻ることがある。Ctrl状態が疑われ、Backspaceが^Hになった事例もあるが、Backspace自体が原因または発生点という証拠はない。症状キーに限定せず、修飾キーの状態が変わる過程を通常時から追うのが目的。原因の確定や入力動作の修正ではなく、観測を追加した差分である。
+
+今回の対象:
+- src/AltHenkan/AltInputService.cs および新規 AltInputService.Trace.cs
+- 新規 src/AltHenkan/InputTrace.cs, InputPlatform.cs
+- src/AltHenkan/DiagnosticLog.cs, NativeMethods.cs, RotatingDiagnosticWriter.cs
+- 新規 tests/AltHenkan.LogicTests/InputTraceTests.cs と Program.cs
+- README.md, CHANGELOG.md
+新規ファイルは下のgit diffに含まれないため必ずReadで全文を読むこと。必要な既存依存も読むこと。
+
+重点:
+1. 左右Ctrl/Alt、通常入力、マウス、Emacs、設定変更、リセット、合成入力について、異常に至る状態遷移をログから追えるか。具体的な経路で不足を指摘する。
+2. ログ追加に伴う実際の入力動作の回帰、フック負荷、再入、親観測・バッチ・トークン対応の誤り。
+3. キューの満杯、書き込み失敗、ローテーション、停止・終了時に残る証拠と、欠落の扱い。通常キーの匿名化。
+4. テストで検証できている範囲と不足。実機障害の原因が証明されたと誤解しないこと。
+
+既存の処理である NativeDownSent をSendInput後に立てる点などは、原因と断定しない。新しい差分が起こす問題と既存の問題を区別すること。常時ログ保存を採用しているため、前回のリングダンプ案をそのまま要求しないこと。
+既にReleaseビルド成功、--native-hooks込み1161件のテスト通過。NuGet脆弱性データ取得のNU1900警告あり。あなた自身がテストを実行したとは書かないこと。
+
+出力は日本語。重要度順に、各指摘にファイル:行番号、具体的な発生条件、影響、根拠、修正案を付ける。確実なバグ、診断上の欠落、改善提案を区別。指摘なしも可。最後に未検証点を短く記載。一般論だけの指摘や根拠のないWindows APIの断定は避ける。
+
+以下は追跡済みファイルの差分:
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 8fb5318..9265c8e 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,15 @@
+ 
+ Alt Henkan のバージョンごとの主な変更を記載します。
+ 
++## 未リリース
++
++### 診断・検証
++
++- 通常起動から入力イベントの経緯を別ログへ継続保存。左右Ctrl／Altの内部状態、フックの通過・抑止、マウス操作による修飾キー送信、Emacs操作、状態リセットの前後を記録。通常キーはすべて匿名の分類で扱い、特定の症状キーに観測を限定しない。
++- 合成入力の要求件数と実送信件数、再入元の観測・送信IDを記録。64ビットでは各送信項目と自前入力のフック観測をトークンで対応付ける。
++- 入力イベントログの文字列化・保存を専用の非同期処理へ分離。容量制限、欠落件数、通常時の定期書き出し、終了時の排出に対応。
++- 実際のイベント処理を使い、状態遷移の記録、再入、部分送信・例外、後続フックの抑止、ログ保存失敗・容量制限を検証するテストを追加。報告された入力異常の原因を確定する修正ではなく、発生経緯を追うための診断強化。
++
+ ## 0.4.1
+ 
+ ### 修正
+diff --git a/README.md b/README.md
+index 5d415fe..a10948b 100644
+--- a/README.md
++++ b/README.md
+@@ -158,7 +158,25 @@ $env:CODESIGN_TIMESTAMP_URL = "http://timestamp.digicert.com"     # 任意(既
+ 
+ `leftAlt`・`rightAlt`・`leftCtrl`・`rightCtrl` の3値は「内部で押下中／元の押下イベントを通過済み／押下イベントをアプリから送信済み」の順です。Windowsから取得した状態は物理キーの押下を直接証明するものではありません。フックの処理スレッド自体が停止した場合は、このスレッド上の定期記録も停止します。
+ 
+-入力できなくなった場合は、可能なら発生時刻を控えて通知領域から終了し、現在のログと `.1`～`.4` をまとめて保管してください。再起動しても直ちには消えませんが、稼働が続くと古い世代は入れ替わります。
++入力イベントの経緯は、通常起動でも同じフォルダーの `AltHenkan-diagnostics.log.input` に継続して保存します。1ファイル最大4 MiB、`.input.1`～`.input.4` の4世代と合わせて最大20 MiBです。次の観測点で内部状態を記録します。
++
++- キーボードフックの入口・出口。左右Ctrl／Alt、Shift、Windows、CapsLockを区別し、その他のキーはBackspaceも含めてすべて `Other` として押下・解放だけを記録
++- Ctrl／Altの保留から送信済みへの変更、EmacsでのCtrl消費、ナビゲーション入力の送信前後
++- マウスボタン・ホイールの処理前後。修飾キーの送信につながる操作を対象とし、移動座標は記録しない
++- 合成入力の送信開始・各送信項目・送信終了。要求件数、実際の送信件数、エラー値、自前入力のフック観測を記録
++- 設定変更、無効化、サスペンド、ロック、終了、フック再登録、状態リセットの前後
++
++`obs` はフック観測ID、`parent` は再入元、`batch` は送信ID、`parentBatch` は再入元の送信IDです。64ビットでは送信項目ごとの `token` を入力に付け、自前入力の観測と直接対応させます。32ビットでは `token=0` となり項目単位の対応はできません。トークンは32ビットで循環するため、同じセッションの近接した記録で照合します。`own=False` でもWindowsの注入フラグが立つ場合は他の注入入力として区別できますが、発行元のアプリまでは特定できません。
++
++各行にセッションID・連番 `seq`・単調増加時計 `qpc` とその周波数を付けます。`utc` は開始時のUTCと単調増加時計から換算するため、途中の時計調整には追従しません。前面ウィンドウのハンドル・プロセスID・スレッドIDも入口で取得します。通常入力のキーコード・スキャンコード・文字・ウィンドウタイトルは保存しません。`sentScan`／`sentVk` はアプリ自身が生成した入力だけを表します。
++
++`state` は内部状態のビット列です。下位から4ビットずつ、左Ctrl・右Ctrl・左Alt・右Altについて「押下中／元の押下を通過済み／押下を送信済み／Emacsで消費済み」を表します。ビット16・17は左右AltのShift保留、18はEmacsモード、19はCapsLock捕捉中、20・21はアプリ・Emacs機能の有効設定です。`captured` はEmacsの保持キー数です。`asyncRaw` のビット0～5はWindowsから取得した左Ctrl・右Ctrl・左Alt・右Alt・Shift・Windowsキーの状態です。取得不能と解放はこの値だけでは区別できず、フック入口では現在イベントの反映前です。
++
++`verdict=Forwarded` はアプリが次のフックへ渡したこと、`Suppressed` はアプリが抑止したことを表します。`nextResult` は後続フックからの戻り値で、受信アプリへの到達は証明しません。`verdict=Exception` の場合はコア処理が完了しておらず、`nextResult` は判定に使用できません。`SendEnd` の `index=1` は送信APIが戻ったこと、`index=0` は例外などで戻らなかったことを示します。APIの送信件数とフックでの観測件数も、受信アプリでの処理完了とは区別します。
++
++文字列化とファイル操作は別スレッドで行い、フック内では観測値を取得し、最大8192件のキューへ追加します。250ミリ秒間隔を目安に書き出すため、フックの定期処理や終了操作を待たずに記録が残ります。キューが満杯なら待機せず省略し、`Trace gap` と通常ログの `traceDropped` に件数を残します。記録取得の例外は `traceRecordFailures`、書き込み失敗は `traceWriteError` で確認できます。通常終了では最大2秒の排出待ちを行います。強制終了・ディスク障害などで未保存の記録が失われる場合があり、欠落区間のイベントが起きなかったとは判断できません。
++
++入力できなくなった場合は、可能なら発生時刻を控えて通知領域から終了し、通常ログと入力イベントログ、それぞれの `.1`～`.4` をまとめて保管してください。再起動しても直ちには消えませんが、稼働が続くと古い世代は入れ替わります。
+ 
+ Alt・Emacsの各操作と送信イベントまで詳しく調べる場合は、起動中の Alt Henkan を終了し、`--diagnostics` を付けて起動してください。ソースから起動する場合:
+ 
+diff --git a/src/AltHenkan/AltInputService.cs b/src/AltHenkan/AltInputService.cs
+index d4ce9c8..6cb0354 100644
+--- a/src/AltHenkan/AltInputService.cs
++++ b/src/AltHenkan/AltInputService.cs
+@@ -5,7 +5,7 @@ using Microsoft.Win32;
+ 
+ namespace AltHenkan;
+ 
+-internal sealed class AltInputService : IDisposable
++internal sealed partial class AltInputService : IDisposable
+ {
+     private const nuint OwnInputMarker = 0x414C5448;
+ 
+@@ -19,7 +19,8 @@ internal sealed class AltInputService : IDisposable
+     private readonly DeferredControlState _rightControl = new(ModifierSides.Right);
+     private readonly EmacsKeyboardState _emacsState = new();
+     private readonly bool _initialNativeCapsLockOn;
+-    private readonly DedicatedMessageLoop _hookThread;
++    private readonly DedicatedMessageLoop? _hookThread;
++    private readonly InputPlatform _platform;
+     private System.Windows.Forms.Timer? _maintenanceTimer;
+     private nint _keyboardHook;
+     private nint _mouseHook;
+@@ -47,19 +48,23 @@ internal sealed class AltInputService : IDisposable
+     public event Action<int>? InputInjectionFailed;
+     public event Action<bool>? EmacsModeChanged;
+ 
+-    public AltInputService(AppSettings settings)
++    public AltInputService(AppSettings settings) : this(settings, new InputPlatform())
+     {
++        _initialNativeCapsLockOn = (NativeMethods.GetKeyState((int)NativeMethods.VkCapsLock) & 1) != 0;
++        _hookThread = new DedicatedMessageLoop(InitializeHookThread, CleanupHookThread);
++        SystemEvents.PowerModeChanged += OnPowerModeChanged;
++        SystemEvents.SessionSwitch += OnSessionSwitch;
++    }
++
++    internal AltInputService(AppSettings settings, InputPlatform platform)
++    {
++        _platform = platform;
+         _settings = settings.Normalize();
+         _emacsState.SetActive(_settings.InitialEmacsActive);
+-        _initialNativeCapsLockOn = (NativeMethods.GetKeyState((int)NativeMethods.VkCapsLock) & 1) != 0;
+         _keyboardCallback = KeyboardHookCallback;
+         _nextKeyboardHook = (code, wParam, lParam) =>
+-            NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            _platform.NextKeyboard(_keyboardHook, code, wParam, lParam);
+         _mouseCallback = MouseHookCallback;
+-
+-        _hookThread = new DedicatedMessageLoop(InitializeHookThread, CleanupHookThread);
+-        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+-        SystemEvents.SessionSwitch += OnSessionSwitch;
+     }
+ 
+     private void InitializeHookThread()
+@@ -107,6 +112,7 @@ internal sealed class AltInputService : IDisposable
+         _lastRefreshAtMilliseconds = Environment.TickCount64;
+         _refreshRequested = false;
+         _hookGeneration++;
++        Trace(new() { Kind = InputTraceKind.Boundary, Reason = InputTraceReason.Registered, Index = _hookGeneration });
+         DiagnosticLog.Write(
+             $"Hooks registered: generation={_hookGeneration}, keyboard=0x{_keyboardHook:X}, mouse=0x{_mouseHook:X}, keyboard callbacks={_keyboardCallbackCount}, mouse callbacks={_mouseCallbackCount}.");
+     }
+@@ -118,6 +124,7 @@ internal sealed class AltInputService : IDisposable
+         var nativeCapsLockOn = (NativeMethods.GetKeyState((int)NativeMethods.VkCapsLock) & 1) != 0;
+         PostToHookThread(() =>
+         {
++            TraceState(InputTraceReason.Settings);
+             var wasEnabled = _settings.Enabled;
+             var wasEmacsEnabled = _settings.Enabled && _settings.EmacsEnabled;
+             _settings = normalized;
+@@ -139,12 +146,13 @@ internal sealed class AltInputService : IDisposable
+ 
+             if (wasEnabled && !_settings.Enabled)
+             {
+-                ResetActiveStates(resetEmacsTransient: false);
++                ResetActiveStates(resetEmacsTransient: false, reason: InputTraceReason.Disabled);
+             }
+             else if (!wasEnabled && _settings.Enabled)
+             {
+                 RequestRefresh("enabled");
+             }
++            TraceState(InputTraceReason.Settings, after: true);
+         });
+     }
+ 
+@@ -157,7 +165,7 @@ internal sealed class AltInputService : IDisposable
+ 
+         try
+         {
+-            await _hookThread.InvokeAsync(action).ConfigureAwait(false);
++            if (_hookThread is not null) await _hookThread.InvokeAsync(action).ConfigureAwait(false);
+         }
+         catch (Exception exception)
+         {
+@@ -172,13 +180,13 @@ internal sealed class AltInputService : IDisposable
+         if (_inputInjectionDepth > 0) _keyboardCallbacksDuringInjection++;
+         try
+         {
+-            return KeyboardHookCore(code, wParam, lParam);
++            return InputTrace.Enabled ? TraceKeyboard(code, wParam, lParam) : KeyboardHookCore(code, wParam, lParam);
+         }
+         catch (Exception exception)
+         {
+             _refreshRequested = true;
+             DiagnosticLog.Write($"Keyboard callback failed; renewal requested: {exception}");
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return _nextKeyboardHook(code, wParam, lParam);
+         }
+         finally
+         {
+@@ -194,15 +202,15 @@ internal sealed class AltInputService : IDisposable
+     {
+         if (code < 0 || _disposed)
+         {
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam);
+         }
+ 
+         var data = Marshal.PtrToStructure<NativeMethods.KbdLlHookStruct>(lParam);
+-        if (data.ExtraInfo == OwnInputMarker)
++        if (IsOwnInput(data.ExtraInfo))
+         {
+             if (DiagnosticLog.VerboseEnabled) DiagnosticLog.WriteVerbose(
+                 $"Injected keyboard event observed: message=0x{unchecked((int)wParam):X4}, vk=0x{data.VirtualKeyCode:X2}, scan=0x{data.ScanCode:X2}, flags=0x{data.Flags:X2}.");
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.OwnInput);
+         }
+ 
+         var message = unchecked((int)wParam);
+@@ -210,7 +218,7 @@ internal sealed class AltInputService : IDisposable
+         var isKeyUp = message is NativeMethods.WmKeyUp or NativeMethods.WmSysKeyUp;
+         if (!isKeyDown && !isKeyUp)
+         {
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam);
+         }
+ 
+         // These IME commands can remain set in GetAsyncKeyState. Pass them through,
+@@ -220,7 +228,7 @@ internal sealed class AltInputService : IDisposable
+         {
+             _nonAltKeysDown.Remove(data.VirtualKeyCode);
+             _imeWidthCommandEvents++;
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.ImeWidth);
+         }
+ 
+         var isExtended = (data.Flags & NativeMethods.LlkhfExtended) != 0;
+@@ -234,7 +242,7 @@ internal sealed class AltInputService : IDisposable
+             {
+                 NotifyEmacsModeChanged();
+             }
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.CapsLock);
+         }
+ 
+         if (data.VirtualKeyCode == NativeMethods.VkLControl ||
+@@ -267,12 +275,12 @@ internal sealed class AltInputService : IDisposable
+                 }
+                 SendNavigation(binding);
+             }
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.Emacs);
+         }
+ 
+         if (!_settings.Enabled)
+         {
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.Inactive);
+         }
+ 
+         PromotePendingControlsToNative();
+@@ -316,7 +324,7 @@ internal sealed class AltInputService : IDisposable
+             _nonAltKeysDown.Remove(data.VirtualKeyCode);
+         }
+ 
+-        return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++        return ForwardKeyboard(code, wParam, lParam);
+     }
+ 
+     private nint HandleControlEvent(
+@@ -332,15 +340,15 @@ internal sealed class AltInputService : IDisposable
+             if (state.IsDown)
+             {
+                 return state.OriginalDownPassed
+-                    ? NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam)
+-                    : SuppressKeyboardEvent();
++                    ? ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlRepeat)
++                    : SuppressKeyboardEvent(InputTraceReason.ControlRepeat);
+             }
+ 
+             state.Start(data.ScanCode, (data.Flags & NativeMethods.LlkhfExtended) != 0);
+             if (!CanDeferControl(state) || IsAnyOtherInputDownForControl())
+             {
+                 state.OriginalDownPassed = true;
+-                return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++                return ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlNative);
+             }
+ 
+             var otherControl = state.Side == ModifierSides.Left ? _rightControl : _leftControl;
+@@ -349,26 +357,26 @@ internal sealed class AltInputService : IDisposable
+                 PromotePendingControlToNative(otherControl);
+                 PromotePendingControlToNative(state);
+             }
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.ControlDeferred);
+         }
+ 
+         if (!state.IsDown)
+         {
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlUnknownUp);
+         }
+ 
+         state.IsDown = false;
+         if (state.OriginalDownPassed)
+         {
+             state.Reset();
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlPassedUp);
+         }
+ 
+         if (state.NativeDownSent)
+         {
+             SendControl(state, keyUp: true);
+             state.Reset();
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.ControlSentUp);
+         }
+ 
+         if (!state.ConsumedByEmacs)
+@@ -377,7 +385,7 @@ internal sealed class AltInputService : IDisposable
+             SendControl(state, keyUp: true);
+         }
+         state.Reset();
+-        return SuppressKeyboardEvent();
++        return SuppressKeyboardEvent(InputTraceReason.ControlTapOrConsumed);
+     }
+ 
+     private nint HandleAltEvent(
+@@ -401,9 +409,9 @@ internal sealed class AltInputService : IDisposable
+                     // Its physical up can now follow the physical down through the hook chain.
+                     state.OriginalDownPassed = true;
+                     state.NativeDownSent = false;
+-                    return _nextKeyboardHook(code, wParam, lParam);
++                    return ForwardKeyboard(code, wParam, lParam, InputTraceReason.AltRepeatNative);
+                 }
+-                return SuppressKeyboardEvent();
++                return SuppressKeyboardEvent(InputTraceReason.AltRepeatHidden);
+             }
+ 
+             state.Start(data.ScanCode, (data.Flags & NativeMethods.LlkhfExtended) != 0);
+@@ -413,7 +421,7 @@ internal sealed class AltInputService : IDisposable
+             {
+                 PromotePendingAltToNative(otherAlt);
+                 PromotePendingAltToNative(state);
+-                return SuppressKeyboardEvent();
++                return SuppressKeyboardEvent(InputTraceReason.AltDeferred);
+             }
+ 
+             if (IsAnyNonAltKeyDown())
+@@ -426,16 +434,16 @@ internal sealed class AltInputService : IDisposable
+                 else
+                 {
+                     state.OriginalDownPassed = true;
+-                    return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++                    return ForwardKeyboard(code, wParam, lParam, InputTraceReason.AltNative);
+                 }
+             }
+ 
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.AltDeferred);
+         }
+ 
+         if (!state.IsDown)
+         {
+-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.AltUnknownUp);
+         }
+ 
+         var heldMilliseconds = Environment.TickCount64 - state.DownAtMilliseconds;
+@@ -444,7 +452,7 @@ internal sealed class AltInputService : IDisposable
+         if (state.OriginalDownPassed)
+         {
+             state.Reset();
+-            return _nextKeyboardHook(code, wParam, lParam);
++            return ForwardKeyboard(code, wParam, lParam, InputTraceReason.AltPassedUp);
+         }
+ 
+         if (state.NativeDownSent)
+@@ -452,13 +460,13 @@ internal sealed class AltInputService : IDisposable
+             DiagnosticLog.WriteVerbose($"{state.Side} Alt used with another input; sending native Alt up.");
+             SendAlt(state, keyUp: true);
+             state.Reset();
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.AltSentUp);
+         }
+ 
+         if (state.ConsumedByEmacs)
+         {
+             state.Reset();
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.AltConsumed);
+         }
+ 
+         if (state.DeferredShiftChord)
+@@ -466,7 +474,7 @@ internal sealed class AltInputService : IDisposable
+             // No angle shortcut followed: preserve the native Alt+Shift chord.
+             SendAltTap(state);
+             state.Reset();
+-            return SuppressKeyboardEvent();
++            return SuppressKeyboardEvent(InputTraceReason.AltTap);
+         }
+ 
+         var longPressEnabled = state.Side == AltSide.Left
+@@ -491,7 +499,7 @@ internal sealed class AltInputService : IDisposable
+         }
+ 
+         state.Reset();
+-        return SuppressKeyboardEvent();
++        return SuppressKeyboardEvent(InputTraceReason.AltTap);
+     }
+ 
+     private nint MouseHookCallback(int code, nint wParam, nint lParam)
+@@ -500,13 +508,13 @@ internal sealed class AltInputService : IDisposable
+         _mouseCallbackCount++;
+         try
+         {
+-            return MouseHookCore(code, wParam, lParam);
++            return InputTrace.Enabled ? TraceMouse(code, wParam, lParam) : MouseHookCore(code, wParam, lParam);
+         }
+         catch (Exception exception)
+         {
+             _refreshRequested = true;
+             DiagnosticLog.Write($"Mouse callback failed; renewal requested: {exception}");
+-            return NativeMethods.CallNextHookEx(_mouseHook, code, wParam, lParam);
++            return _platform.NextMouse(_mouseHook, code, wParam, lParam);
+         }
+         finally
+         {
+@@ -526,7 +534,7 @@ internal sealed class AltInputService : IDisposable
+             PromotePendingAltsToNative();
+         }
+ 
+-        return NativeMethods.CallNextHookEx(_mouseHook, code, wParam, lParam);
++        return _platform.NextMouse(_mouseHook, code, wParam, lParam);
+     }
+ 
+     private void PromotePendingAltsToNative()
+@@ -548,8 +556,10 @@ internal sealed class AltInputService : IDisposable
+             return;
+         }
+ 
++        TraceState(InputTraceReason.PromoteControl);
+         SendControl(state, keyUp: false);
+         state.NativeDownSent = true;
++        TraceState(InputTraceReason.PromoteControl, after: true);
+         DiagnosticLog.WriteVerbose($"{state.Side} Ctrl used with native input; sent Ctrl down.");
+     }
+ 
+@@ -570,8 +580,10 @@ internal sealed class AltInputService : IDisposable
+             return;
+         }
+ 
++        TraceState(InputTraceReason.PromoteAlt);
+         SendAlt(state, keyUp: false);
+         state.NativeDownSent = true;
++        TraceState(InputTraceReason.PromoteAlt, after: true);
+         DiagnosticLog.WriteVerbose($"{state.Side} Alt used with another input; sent native Alt down.");
+     }
+ 
+@@ -594,9 +606,9 @@ internal sealed class AltInputService : IDisposable
+                IsVirtualKeyDown(NativeMethods.VkLWin) || IsVirtualKeyDown(NativeMethods.VkRWin);
+     }
+ 
+-    private static bool IsVirtualKeyDown(uint virtualKey)
++    private bool IsVirtualKeyDown(uint virtualKey)
+     {
+-        return (NativeMethods.GetAsyncKeyState((int)virtualKey) & 0x8000) != 0;
++        return _platform.IsDown((int)virtualKey);
+     }
+ 
+     private static nuint GetForegroundKeyboardLayout()
+@@ -638,6 +650,7 @@ internal sealed class AltInputService : IDisposable
+             return;
+         }
+ 
++        TraceState(InputTraceReason.ConsumeControl);
+         if (state.OriginalDownPassed || state.NativeDownSent)
+         {
+             SendControl(state, keyUp: true);
+@@ -647,6 +660,7 @@ internal sealed class AltInputService : IDisposable
+         state.OriginalDownPassed = false;
+         state.NativeDownSent = false;
+         state.ConsumedByEmacs = true;
++        TraceState(InputTraceReason.ConsumeControl, after: true);
+     }
+ 
+     private bool CanDeferControl(DeferredControlState state) =>
+@@ -683,6 +697,7 @@ internal sealed class AltInputService : IDisposable
+ 
+     private void SendNavigation(EmacsBinding binding)
+     {
++        TraceState(InputTraceReason.Navigation);
+         var modifiers = new List<ushort>();
+         if (IsVirtualKeyDown(NativeMethods.VkLControl) && !_leftControl.HiddenFromForeground)
+             modifiers.Add((ushort)NativeMethods.VkLControl);
+@@ -696,7 +711,9 @@ internal sealed class AltInputService : IDisposable
+             modifiers.Add((ushort)NativeMethods.VkRMenu);
+ 
+         var plan = NavigationInputPlan.Create(binding, modifiers);
+-        SendKeyboardInputs(plan.Select(stroke => CreateNavigationKeyInput(stroke.VirtualKey, stroke.KeyUp)).ToArray());
++        SendKeyboardInputsFor(InputTraceReason.Navigation,
++            plan.Select(stroke => CreateNavigationKeyInput(stroke.VirtualKey, stroke.KeyUp)).ToArray());
++        TraceState(InputTraceReason.Navigation, after: true);
+         DiagnosticLog.WriteVerbose($"Emacs operation: {binding.Shortcut}.");
+     }
+ 
+@@ -704,7 +721,7 @@ internal sealed class AltInputService : IDisposable
+     {
+         if (_settings.Enabled && _settings.EmacsEnabled && nativeCapsLockOn)
+         {
+-            SendKeyboardInputs(
++            SendKeyboardInputsFor(InputTraceReason.CapsReset,
+                 CreateVirtualKeyInput((ushort)NativeMethods.VkCapsLock, false),
+                 CreateVirtualKeyInput((ushort)NativeMethods.VkCapsLock, true));
+         }
+@@ -728,38 +745,57 @@ internal sealed class AltInputService : IDisposable
+         DiagnosticLog.WriteVerbose(
+             $"Foreground keyboard layout before injection: HKL=0x{keyboardLayout:X}, LANGID=0x{keyboardLayout & 0xFFFF:X4}.");
+ 
+-        SendKeyboardInputs(
++        SendKeyboardInputsFor(InputTraceReason.ImeTap,
+             CreateVirtualKeyInput(virtualKey, keyUp: false),
+             CreateVirtualKeyInput(virtualKey, keyUp: true));
+     }
+ 
+     private void SendAltTap(AltState state)
+     {
+-        SendKeyboardInputs(
++        SendKeyboardInputsFor(InputTraceReason.AltTap,
+             CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp: false),
+             CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp: true));
+     }
+ 
+     private void SendAlt(AltState state, bool keyUp)
+     {
+-        SendKeyboardInputs(
++        SendKeyboardInputsFor(InputTraceReason.AltSend,
+             CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp));
+     }
+ 
+     private void SendControl(DeferredControlState state, bool keyUp)
+     {
+-        SendKeyboardInputs(
++        SendKeyboardInputsFor(InputTraceReason.ControlSend,
+             CreateScanCodeInput(state.ScanCode, state.IsExtended, keyUp));
+     }
+ 
+     private void SendKeyboardInputs(params NativeMethods.Input[] inputs)
++        => SendKeyboardInputsFor(InputTraceReason.None, inputs);
++
++    private void SendKeyboardInputsFor(InputTraceReason reason, params NativeMethods.Input[] inputs)
+     {
++        var parentBatch = _traceBatch;
++        _traceBatch = ++_traceBatchSequence;
++        var started = Stopwatch.GetTimestamp();
++        var result = new InputSendResult(0, 0);
++        var completed = false;
+         _inputInjectionDepth++;
+         _inputInjectionCalls++;
+         _maxInputInjectionDepth = Math.Max(_maxInputInjectionDepth, _inputInjectionDepth);
+         try
+         {
+-            if (NativeMethods.SendKeyboardInputs(inputs, out var errorCode))
++            Trace(new() { Kind = InputTraceKind.SendBegin, Reason = reason, ParentBatch = parentBatch, Requested = inputs.Length });
++            for (var index = 0; index < inputs.Length; index++)
++            {
++                inputs[index].Data.Keyboard.ExtraInfo = NextInputMarker();
++                var key = inputs[index].Data.Keyboard;
++                Trace(new() { Kind = InputTraceKind.SendItem, Reason = reason, Index = index,
++                    Token = TraceToken(key.ExtraInfo), SentScan = key.ScanCode, SentVirtualKey = key.VirtualKey,
++                    Up = (key.Flags & NativeMethods.KeyeventfKeyUp) != 0, Flags = key.Flags, Own = true });
++            }
++            result = _platform.Send(inputs);
++            completed = true;
++            if (result.Sent == (uint)inputs.Length)
+             {
+                 if (DiagnosticLog.VerboseEnabled)
+                     DiagnosticLog.WriteVerbose($"SendInput succeeded for {inputs.Length} keyboard event(s).");
+@@ -768,13 +804,17 @@ internal sealed class AltInputService : IDisposable
+             {
+                 _inputInjectionFailures++;
+                 DiagnosticLog.Write(
+-                    $"SendInput failed for {inputs.Length} keyboard event(s); Windows error={errorCode}.");
+-                InputInjectionFailed?.Invoke(errorCode);
++                    $"SendInput failed: requested={inputs.Length}, sent={result.Sent}; Windows error={result.Error}.");
++                InputInjectionFailed?.Invoke(result.Error);
+             }
+         }
+         finally
+         {
++            Trace(new() { Kind = InputTraceKind.SendEnd, Reason = reason, ParentBatch = parentBatch,
++                Requested = inputs.Length, Sent = result.Sent, Error = result.Error, Index = completed ? 1 : 0,
++                ElapsedTicks = Stopwatch.GetTimestamp() - started });
+             _inputInjectionDepth--;
++            _traceBatch = parentBatch;
+         }
+     }
+ 
+@@ -842,8 +882,10 @@ internal sealed class AltInputService : IDisposable
+         };
+     }
+ 
+-    private void ResetActiveStates(bool resetEmacsTransient = true)
++    private void ResetActiveStates(bool resetEmacsTransient = true, InputTraceReason reason = InputTraceReason.Renewal)
+     {
++        Trace(new() { Kind = InputTraceKind.Boundary, Reason = reason });
++        TraceState(InputTraceReason.ResetBegin);
+         if (_leftAlt.IsDown || _rightAlt.IsDown || _leftControl.IsDown || _rightControl.IsDown ||
+             _emacsState.GestureActive)
+             WriteHookStatus("before active state reset");
+@@ -869,6 +911,7 @@ internal sealed class AltInputService : IDisposable
+ 
+         _nonAltKeysDown.Clear();
+         if (resetEmacsTransient) _emacsState.ResetTransient();
++        TraceState(InputTraceReason.ResetEnd, after: true);
+     }
+ 
+     private void RequestRefresh(string reason)
+@@ -881,7 +924,7 @@ internal sealed class AltInputService : IDisposable
+     {
+         if (args.Mode == PowerModes.Suspend)
+         {
+-            PostToHookThread(() => ResetActiveStates());
++            PostToHookThread(() => ResetActiveStates(reason: InputTraceReason.Suspend));
+         }
+         else if (args.Mode == PowerModes.Resume)
+         {
+@@ -893,7 +936,7 @@ internal sealed class AltInputService : IDisposable
+     {
+         if (args.Reason == SessionSwitchReason.SessionLock)
+         {
+-            PostToHookThread(() => ResetActiveStates());
++            PostToHookThread(() => ResetActiveStates(reason: InputTraceReason.SessionLock));
+         }
+         else if (args.Reason == SessionSwitchReason.SessionUnlock)
+         {
+@@ -962,7 +1005,7 @@ internal sealed class AltInputService : IDisposable
+         try
+         {
+             WriteHookStatus("shutdown");
+-            ResetActiveStates();
++            ResetActiveStates(reason: InputTraceReason.Shutdown);
+         }
+         finally
+         {
+@@ -971,13 +1014,15 @@ internal sealed class AltInputService : IDisposable
+         DiagnosticLog.Write("Dedicated hook thread stopped.");
+     }
+ 
+-    private nint SuppressKeyboardEvent()
++    private nint SuppressKeyboardEvent(InputTraceReason reason = InputTraceReason.None)
+     {
++        _traceVerdict = InputTraceVerdict.Suppressed;
++        _traceReason = reason;
+         _suppressedKeyboardEventCount++;
+         return 1;
+     }
+ 
+-    private static AltModifierSnapshot GetAltSnapshot(AltState state) => new(
++    private AltModifierSnapshot GetAltSnapshot(AltState state) => new(
+         state.IsDown, state.OriginalDownPassed, state.NativeDownSent,
+         IsVirtualKeyDown(state.Side == AltSide.Left ? NativeMethods.VkLMenu : NativeMethods.VkRMenu));
+ 
+@@ -1015,11 +1060,13 @@ internal sealed class AltInputService : IDisposable
+         // Windows already reports up. Clear bookkeeping without inventing a tap or injecting input.
+         state.Reset();
+         _altStateRecoveries++;
++        TraceState(InputTraceReason.RecoveredAlt, after: true);
+         RequestRefresh("released Alt state reconciled");
+     }
+ 
+     private void WriteHookStatus(string reason)
+     {
++        Trace(new() { Kind = InputTraceKind.Boundary, Reason = InputTraceReason.Maintenance, Index = _hookGeneration });
+         // No ordinary key codes, typed text, window titles or clipboard contents.
+         var layout = GetForegroundKeyboardLayout();
+         DiagnosticLog.Write($"Hook status ({reason}): generation={_hookGeneration}, " +
+@@ -1043,7 +1090,9 @@ internal sealed class AltInputService : IDisposable
+             $"imeWidthEvents={_imeWidthCommandEvents}, " +
+             $"asyncWidth={IsVirtualKeyDown(KeyHoldPolicy.ImeSingleByte)}/{IsVirtualKeyDown(KeyHoldPolicy.ImeDoubleByte)}, " +
+             $"trackedWidth={_nonAltKeysDown.Contains(KeyHoldPolicy.ImeSingleByte)}/{_nonAltKeysDown.Contains(KeyHoldPolicy.ImeDoubleByte)}, " +
+-            $"altStateRecoveries={_altStateRecoveries}, droppedLogs={DiagnosticLog.DroppedEntries}.");
++            $"altStateRecoveries={_altStateRecoveries}, droppedLogs={DiagnosticLog.DroppedEntries}, " +
++            $"traceDropped={InputTrace.Dropped}, traceRecordFailures={InputTrace.RecordFailures}, " +
++            $"traceWriteError={InputTrace.LastError?.GetType().Name ?? "none"}.");
+     }
+ 
+     private void UnregisterHooks()
+@@ -1071,7 +1120,7 @@ internal sealed class AltInputService : IDisposable
+         _disposed = true;
+         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+         SystemEvents.SessionSwitch -= OnSessionSwitch;
+-        _hookThread.Dispose();
++        _hookThread?.Dispose();
+     }
+ 
+     private enum AltSide
+diff --git a/src/AltHenkan/DiagnosticLog.cs b/src/AltHenkan/DiagnosticLog.cs
+index 42baf41..76247be 100644
+--- a/src/AltHenkan/DiagnosticLog.cs
++++ b/src/AltHenkan/DiagnosticLog.cs
+@@ -17,8 +17,10 @@ internal static class DiagnosticLog
+     {
+         Shutdown();
+         VerboseEnabled = verbose;
++        var session = Guid.NewGuid();
++        InputTrace.Initialize((path ?? Path) + ".input", session);
+         _writer = new QueuedDiagnosticWriter(() => new RotatingDiagnosticWriter(path ?? Path));
+-        Write($"Session started: id={Guid.NewGuid():N}, version={typeof(DiagnosticLog).Assembly.GetName().Version}, " +
++        Write($"Session started: id={session:N}, version={typeof(DiagnosticLog).Assembly.GetName().Version}, " +
+             $"pid={Environment.ProcessId}, verbose={verbose}, OS={Environment.OSVersion.Version}, " +
+             $"64bit={Environment.Is64BitProcess}.");
+     }
+@@ -35,6 +37,7 @@ internal static class DiagnosticLog
+ 
+     public static void Shutdown()
+     {
++        InputTrace.Shutdown();
+         var writer = Interlocked.Exchange(ref _writer, null);
+         if (writer is null) return;
+         writer.TryWrite("Session ended.");
+diff --git a/src/AltHenkan/NativeMethods.cs b/src/AltHenkan/NativeMethods.cs
+index 737e46e..9717051 100644
+--- a/src/AltHenkan/NativeMethods.cs
++++ b/src/AltHenkan/NativeMethods.cs
+@@ -165,15 +165,15 @@ internal static class NativeMethods
+     internal static extern nint GetModuleHandle(string? moduleName);
+ 
+     internal static bool SendKeyboardInputs(Input[] inputs, out int errorCode)
++    {
++        var result = SendKeyboardInputsDetailed(inputs);
++        errorCode = result.Error;
++        return result.Sent == (uint)inputs.Length;
++    }
++
++    internal static InputSendResult SendKeyboardInputsDetailed(Input[] inputs)
+     {
+         var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+-        if (sent == (uint)inputs.Length)
+-        {
+-            errorCode = 0;
+-            return true;
+-        }
+-
+-        errorCode = Marshal.GetLastWin32Error();
+-        return false;
++        return new(sent, sent == (uint)inputs.Length ? 0 : Marshal.GetLastWin32Error());
+     }
+ }
+diff --git a/src/AltHenkan/RotatingDiagnosticWriter.cs b/src/AltHenkan/RotatingDiagnosticWriter.cs
+index 4bf0667..9be5a39 100644
+--- a/src/AltHenkan/RotatingDiagnosticWriter.cs
++++ b/src/AltHenkan/RotatingDiagnosticWriter.cs
+@@ -10,17 +10,19 @@ internal sealed class RotatingDiagnosticWriter : TextWriter
+     private readonly string _path;
+     private readonly int _maximumBytes;
+     private readonly int _archiveCount;
++    private readonly bool _flushEveryLine;
+     private FileStream? _stream;
+     public override Encoding Encoding => new UTF8Encoding(false);
+ 
+     public RotatingDiagnosticWriter(string path,
+-        int maximumBytes = DefaultMaximumBytes, int archiveCount = DefaultArchiveCount)
++        int maximumBytes = DefaultMaximumBytes, int archiveCount = DefaultArchiveCount, bool flushEveryLine = true)
+     {
+         ArgumentOutOfRangeException.ThrowIfLessThan(maximumBytes, 128);
+         ArgumentOutOfRangeException.ThrowIfLessThan(archiveCount, 1);
+         _path = System.IO.Path.GetFullPath(path);
+         _maximumBytes = maximumBytes;
+         _archiveCount = archiveCount;
++        _flushEveryLine = flushEveryLine;
+         Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+         Open();
+         if (_stream!.Length >= _maximumBytes) Rotate();
+@@ -56,7 +58,7 @@ internal sealed class RotatingDiagnosticWriter : TextWriter
+         var bytes = Encoding.GetBytes(text + newline);
+         if (_stream!.Length + bytes.Length > _maximumBytes) Rotate();
+         _stream!.Write(bytes);
+-        _stream.Flush();
++        if (_flushEveryLine) _stream.Flush();
+         return Task.CompletedTask;
+     }
+ 
+diff --git a/tests/AltHenkan.LogicTests/Program.cs b/tests/AltHenkan.LogicTests/Program.cs
+index 9f5748b..ff3f0e0 100644
+--- a/tests/AltHenkan.LogicTests/Program.cs
++++ b/tests/AltHenkan.LogicTests/Program.cs
+@@ -9,6 +9,7 @@ EmacsTests.Run((name, passed) => Check(name, true, passed));
+ EmacsExpansionTests.Run((name, passed) => Check(name, true, passed));
+ MissedKeyUpTests.Run((name, passed) => Check(name, true, passed));
+ DiagnosticTests.Run((name, passed) => Check(name, true, passed));
++InputTraceTests.Run((name, passed) => Check(name, true, passed));
+ KeyHoldPolicyTests.Run((name, passed) => Check(name, true, passed));
+ AltRecoveryTests.Run((name, passed) => Check(name, true, passed));
+ 

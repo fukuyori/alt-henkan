@@ -17,10 +17,12 @@ internal static class DiagnosticLog
     {
         Shutdown();
         VerboseEnabled = verbose;
+        var session = Guid.NewGuid();
         _writer = new QueuedDiagnosticWriter(() => new RotatingDiagnosticWriter(path ?? Path));
-        Write($"Session started: id={Guid.NewGuid():N}, version={typeof(DiagnosticLog).Assembly.GetName().Version}, " +
+        Write($"Session started: id={session:N}, version={typeof(DiagnosticLog).Assembly.GetName().Version}, " +
             $"pid={Environment.ProcessId}, verbose={verbose}, OS={Environment.OSVersion.Version}, " +
             $"64bit={Environment.Is64BitProcess}.");
+        InputTrace.Initialize((path ?? Path) + ".input", session);
     }
 
     public static void Write(string message)
@@ -35,6 +37,7 @@ internal static class DiagnosticLog
 
     public static void Shutdown()
     {
+        InputTrace.Shutdown();
         var writer = Interlocked.Exchange(ref _writer, null);
         if (writer is null) return;
         writer.TryWrite("Session ended.");

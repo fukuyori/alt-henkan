@@ -166,14 +166,14 @@ internal static class NativeMethods
 
     internal static bool SendKeyboardInputs(Input[] inputs, out int errorCode)
     {
-        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
-        if (sent == (uint)inputs.Length)
-        {
-            errorCode = 0;
-            return true;
-        }
+        var result = SendKeyboardInputsDetailed(inputs);
+        errorCode = result.Error;
+        return result.Sent == (uint)inputs.Length;
+    }
 
-        errorCode = Marshal.GetLastWin32Error();
-        return false;
+    internal static InputSendResult SendKeyboardInputsDetailed(Input[] inputs)
+    {
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>());
+        return new(sent, sent == (uint)inputs.Length ? 0 : Marshal.GetLastWin32Error());
     }
 }

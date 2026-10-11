@@ -1,0 +1,191 @@
+# Alt Henkan 診断ログ設計レビュー（HEAD 3c9189b / 0.4.1）
+
+## 結論
+
+- **方式**: 記録はフックスレッド上のメモリリングに固定長の構造体で残します。文字列の整形とファイル書き出しは別スレッドで行います。ファイルに残すのは次の3つに絞ります。
+  - (a) 低頻度のカウンタ／状態ライン
+  - (b) 異常を検知したとき、またはユーザーが反応したとき（無効化・終了・リセット）に書き出すリングのダンプ
+  - (c) 自前で送った入力が自分のフックに届いたかどうかの照合結果
+- **最重要の観測点**: `KeyboardHookCore` の 278 行 `PromotePendingControlsToNative()` です。Backspace を含む Ctrl 以外の全キーがここを通ります。ここで隠れていた Ctrl が SendInput で Windows に出るので、「Backspace の直前に合成 Ctrl down が出たか」を直接記録できる唯一の場所です。
+- **なぜダンプが必要か**: `^H` という症状そのものは、このアプリからは見えません。ユーザーの反応点（14:55:35 の設定無効化のような操作や、終了）でリングを自動保存すれば、「症状が出る前の証拠」が残ります。
+
+コードを読んで、注意すべき既存の構造が3点ありました。今回の原因と断定するものではなく、ログで可視化すべき対象です。
+
+1. `PromotePendingControlToNative` (`src/AltHenkan/AltInputService.cs:551-552`) と `PromotePendingAltToNative` (`:573-574`) は、SendInput を呼んだ**後で** `NativeDownSent` を立てます。送信中にフックが再入すると、再入した側は送信前の状態を見ます。
+2. `ConsumePendingControlGesture` (`:643`) が Ctrl up を送った直後に、`SendNavigation` (`:687-690`) が `GetAsyncKeyState` を読みます。この時点では送った up がまだ反映されていない前提で、それを `HiddenFromForeground` で回避しています。
+3. Ctrl には Alt の `ReconcileReleasedAlts` (`:984`) に相当する突き合わせがありません。また `MaintainHooks` は Ctrl を追跡中だとフック更新自体を止めます (`:932-937`)。
+
+---
+
+## 1. 観測点（現行の行番号）
+
+### AltInputService.cs（必須）
+
+| 位置 | メソッド | 入れるもの |
+|---|---|---|
+| `:170-172` 入口 | `KeyboardHookCallback` | `obsId` の採番、入口時刻（QPC）、`_inputInjectionDepth`、現在のバッチID（親）を取得 |
+| `:177-182` 例外 | 同上 | 例外記録（obsId 付き）。今の文字列ログは残す |
+| `:183-190` 出口 | 同上 | 判定（通過／抑止／例外）、経過時間、前後の状態。**返り値を変数に受けてから finally で記録する形に変える** |
+| `:195-198` 早期 return | `KeyboardHookCore` | 件数のみ（code<0 / disposed） |
+| `:201-206` OwnInputMarker | 同上 | **自前送信の観測レコード**（VK・scan・up と照合結果）。今は verbose のときだけ文字列を出している |
+| `:211-214` キー以外 | 同上 | 件数のみ |
+| `:218-224` IME 幅キー | 同上 | 種別 ImeWidth（VK は不要） |
+| `:229-238` CapsLock 捕捉 | 同上 | モード切替（前後） |
+| `:240-250` Ctrl 振り分け | 同上 | `HandleControlEvent` 側で記録する。**無効時（`:273` より前）でも通る**点に注意 |
+| `:252-271` Emacs 変換 | 同上 | 一致したときだけ、ショートカットの enum、修飾ビット、Alt/Ctrl 消費の有無 |
+| `:273-276` 無効時の通過 | 同上 | 件数のみ |
+| `:278` | 同上 | **昇格のきっかけになったキーの種別**（Backspace など）と、昇格したかどうか |
+| `:296-308` | 同上 | Alt 昇格か Shift 保留か |
+| `:332-337 / 339-344 / 346-352 / 355-357 / 361-365 / 367-372 / 374-380` | `HandleControlEvent` | **分岐ごとの理由コード**と前後の状態。`:340` は CanDefer=false なのか「他の入力が押下中」なのかを分けて記録する。`:355-357`（追跡していない up）は異常の指標 |
+| `:394-407 / 409-433 / 436-494` | `HandleAltEvent` | 同上。`:397-404`（up を取り逃した後の再押下の変換）は必ず記録 |
+| `:544-554` | `PromotePendingControlToNative` | 前の状態、バッチID、後の状態、追跡開始からの経過 ms |
+| `:566-576` | `PromotePendingAltToNative` | 同上 |
+| `:634-650` | `ConsumePendingControlGesture` | Ctrl up を送ったか、隠した状態に戻したか |
+| `:684-701` | `SendNavigation` | 検出した修飾（非同期の L/R Ctrl・Shift、Alt の復元）、Hidden 判定、plan の長さ、バッチID |
+| `:755-779` | `SendKeyboardInputs` | **送信開始と送信完了**（後述の項目） |
+| `:845-872` | `ResetActiveStates` | **reason 引数を追加**（呼び出し元は `:142/884/896/947/965`）。送った up と前後の状態。**リセット前にダンプを要求する** |
+| `:121-147` | `UpdateSettings`（投稿された処理） | 新旧の Enabled/Emacs。無効化時はダンプ |
+| `:880-902` | Power / Session | 境界レコード |
+| `:904-956` | `MaintainHooks` | 早期 return（`:925-928`、`:934-937`）の理由、フック生存チェック、Ctrl の不一致観測（後述） |
+| `:78-112` | `RegisterHooks` | 世代番号はすでに記録済み。リングにも境界として入れる |
+| `:958-972` | `CleanupHookThread` | **`:965` の前にダンプ**（終了で回復した事例の「回復直前の状態」を残すため） |
+| `:1021-1047` | `WriteHookStatus` | リングの seq とドロップ数、昇格回数などのカウンタ、非同期読み取りの信頼性フラグ、時刻アンカー |
+| `:521-530` | `MouseHookCore` | **昇格が起きたときだけ**記録（ボタン／ホイールの種別と LLMHF_INJECTED）。それ以外は件数のみ |
+
+### その他
+
+- `src/AltHenkan/NativeMethods.cs:167-178` `SendKeyboardInputs`: 今は `sent` を bool にしてしまっています。**実際の戻り件数（uint）と LastError を返す**よう変えます。部分送信は現状、件数ごと捨てられています。
+- `src/AltHenkan/TrayApplicationContext.cs:73-79` (SetEnabled)、`:81-98` (ShowSettings)、`:37` (終了): 「ユーザーが反応した」マーカーをフックスレッドへ投稿します。任意で、トレイに「診断を保存」を追加してもよいです。
+
+---
+
+## 2. 記録の粒度
+
+| 対象 | 粒度 |
+|---|---|
+| Ctrl/Alt の down/up | **全件**、分岐の理由コード付き。scan と flags も残す（scan 0x21D は AltGr が合成する LCtrl の識別に使える） |
+| オートリピート | 直前のレコードと種別・判定・状態がすべて同じなら、新規レコードにせず repeat カウントを増やす |
+| Backspace | 診断用のプローブキーとして**種別だけ全件**リングに入れる（リピートは圧縮）。ファイルにはカウンタと、異常条件（後述）のときだけ出す |
+| 他キーが起こした修飾状態の変化 | `:278 / :306 / :301` で状態が**変わったときだけ**記録する。キーは「Other」とし、VK は記録しない |
+| 通常の文字キー | 状態が変わらない限り記録しない。Emacs の元キーも、ショートカットに一致したときだけ enum で記録する（文字の識別子は出さない） |
+| Emacs 変換 | 1操作1レコード（ショートカット、修飾ビット、plan の修飾リスト、バッチID）。送るのは修飾キーとナビゲーションキーだけなので、自前送信は VK 付きで構いません |
+| マウス | 昇格したときだけ。座標は記録しない |
+| SendInput | 1バッチにつき開始と完了の2レコード、自前イベントの観測は1件ずつ |
+| 設定・電源・ロック・フック更新 | 境界レコード |
+| フォーカス | 記録するキーイベントの時点で `GetForegroundWindow` を見て、変わっていたら hwnd・pid・tid・HKL を記録。**タイトルは取らない**。どの端末かを特定するには exe 名（パスなし）が要りますが、利用アプリの記録になるので、入れるかどうかはご判断ください |
+
+クリップボードとウィンドウタイトルは一切取得しません。
+
+---
+
+## 3. 最小限のレコード項目（目安 64 バイト）
+
+- `Seq`（long）: 全レコードで単調増加する番号。ギャップがあればリングの上書きが起きたと分かる
+- `ObsId` と `ParentId`: 入力コールバックの ID と、状態変更や送信を引き起こしたコールバックの ID
+- `BatchId`（int）と `ParentBatchId`
+- `Depth`（`_inputInjectionDepth`）
+- `Qpc`（Stopwatch）: 入口と出口の両方
+- `EventTime`: `KbdLlHookStruct.Time` (`NativeMethods.cs:54`)。入口の TickCount との差でフックの配送遅延が分かる
+- `Kind`: KeyIn / MouseIn / OwnObserved / SendBegin / SendEnd / State / Settings / Hook / Reset / Periodic / Marker / Foreground
+- `KeyClass`: LCtrl / RCtrl / LAlt / RAlt / Shift / Win / Caps / Backspace / EmacsBound(enum) / ImeWidth / Other / Mouse
+- `Up`、`LlFlags`（INJECTED 0x10、LOWER_IL 0x02、EXTENDED 0x01、ALTDOWN 0x20）
+- `ExtraKind`: none / own / foreign。他プロセスからの注入を区別するため
+- `Pre` と `Post`: L/R Ctrl の {IsDown, OrigPassed, NativeSent, Consumed} と、L/R Alt の同項目＋DeferredShift をビットで（20 ビット程度）
+- `AsyncPre`: L/R Ctrl、L/R Alt、Shift、Win。「入口で読んだ値」と明記する
+- `Verdict`（Pass / Suppress / Exception）と `Reason`（分岐コード）
+- 送信関係: `Purpose`（Promote / Consume / Navigation / Tap / ImeTap / Reset / Caps）、`Requested`、`Sent`、`LastError`、`OwnObservedDuringCall`
+
+### 再入の扱い
+
+- フック、タイマー、`PostToHookThread` はすべて同じ専用スレッドで動きます（`DedicatedMessageLoop`）。書き込みは単一スレッドで、ロックは要りません。
+- 再入はスタックで扱います。`SendKeyboardInputs` の中で前のバッチIDを退避して新しい ID を入れ、finally で戻します。
+- `obsId` は入口で採番し、レコードは出口で書きます（入口の QPC を含める）。読む側は、完了順（Seq）と入口の時刻・ID の区間から入れ子を復元します。
+- 自前イベントは**送った順の FIFO で照合**します（バッチごとに想定する scan/vk と up のリスト）。SendInput が直列なので、ExtraInfo を変える必要はありません（`ExtraInfo` の上位ビットにバッチIDを入れるのは後の拡張で十分です）。
+- 照合が一致しないときや、送ってから一定時間（例: 1 秒）たっても届かないものは異常カウントにします。
+- 現在の「送信中フック 9 回」は、自前イベントの再入なのか**物理イベントの再入**なのかを区別できません。区別できるのは `ExtraKind` と `Depth` の組です。物理 Ctrl up が `:551` の送信中に再入すると、`:374-378` のタップ経路から `:552` で Reset 済みの状態に `NativeDownSent=true` が入ります。この並びが実際に起きるかは記録で確認すべきで、推測で決めないでください。
+
+---
+
+## 4. 観測の限界（ログに明記すべきこと）
+
+- **`GetAsyncKeyState` は、いま処理中のイベントを反映する前の値です。** 同じコールバック内で先に送った注入（例: `:643` の後の `:687`）もまだ反映されていません。抑止した隠れ Ctrl は、ユーザーが押していても常に up と見えます。
+- **0 は「取得できない」場合にも返ります**（`AsyncKeyStateAccess.cs:7` のコメント）。`WriteHookStatus` の `asyncCtrl` (`:1040`) はこの判定を通していません。つまり保存ログの `asyncCtrl=False` は「解放されていた」の証明になりません。定期ステータスでは信頼性フラグを併記すべきです。ただし `TryReadAlt` はトークン照会を伴う重い処理なので（`:8` のとおり）キーのコールバックでは使わず、定期処理と異常時だけにします。
+- **SendInput の戻り値は、入力ストリームに挿入された件数にすぎません。** 対象アプリの処理完了ではありません。UIPI で遮断されると 0 が返ります。自前フックで観測できたとしても「LL フック段階を通った」ことまでしか分かりません。
+- 受信アプリ側の `GetKeyState`（キュー同期の状態）、端末内部の修飾状態、Ghostty のモード（legacy encoding や backarrow 系）、PTY に送られたバイト、リモート側の `stty erase` は見えません。
+- 自分より後ろのフックや、他の注入ツールの影響は、`foreign injected` としてしか見えません。
+- LL フックがタイムアウトすると、Windows は通知なしにそのイベントでフックを飛ばします。タイムアウトが続くとフック自体が外されます。飛ばされたイベントは記録できず、間接的な証拠しか残りません。
+
+---
+
+## 5. 負荷・欠落対策と方式の比較
+
+| 方式 | 評価 |
+|---|---|
+| 今のようにイベントごとに文字列を `DiagnosticLog.Write` する | ✗。呼び出し元での整形と割り当てがコールバックの時間を延ばします。2048 件のキューで欠落します。1 行ごとに Flush して 5MiB はすぐ回るので、残したい証拠がすぐ消えます |
+| **固定長構造体のリング（8192 件 × 64B で約 512KB、事前に確保）** | ◎ 常時記録。割り当てなし、ロックなし。リピートを圧縮すれば数分から十数分ぶんを保持できます |
+| 整形を別スレッドで | ◎ ダンプのときだけ、コピーした配列をワーカーで文字列化します |
+| 常時ファイルに出すもの | 低頻度のカウンタと定期ステータス（差分付き）だけ。昇格回数、追跡していない up、自前イベントの欠落、foreign 注入の修飾、「Backspace のとき非同期 Ctrl が押下」などの件数 |
+| 異常時の書き出し | ◎ 必須です |
+
+### ダンプの方法
+
+- トリガー
+  - 設定の無効化
+  - 終了（`:965` の前）
+  - `ResetActiveStates`
+  - フック再登録
+  - 異常: 自前イベントの欠落、追跡していない Ctrl up、長時間（N 秒以上）隠れていた Ctrl の昇格、Backspace の時点で「追跡していない Ctrl なのに非同期 Ctrl が押下」、遅いコールバック
+  - ユーザー操作のマーカー
+- コールバック内ではフラグを立てるだけにします。コピーは次のタイマー tick（1 秒）で行います。
+- ファイルは**ローテーションログとは別**にします。`RotatingDiagnosticWriter.cs:49-55` は 1 行が 1MiB を超えると切り詰めます。また大量の行を流すと `QueuedDiagnosticWriter` の 2048 件を埋めてしまいます。
+- ダンプには回数制限（例: 種類ごとに 60 秒に 1 回、1 セッションで最大 N 件）と、ファイル数の上限を設けます。
+- ヘッダには時刻アンカー（QPC、`DateTimeOffset.Now`、TickCount64）を入れます。キューの時刻は `QueuedDiagnosticWriter.cs:53` で取っている壁時計で、時刻が飛ぶことがあるためです。
+
+### 残る限界
+
+- リングの上書き: Seq のギャップで検出はできます。
+- キューからのドロップ: 件数しか分かりません。ドロップから回復した最初の書き込みで「N 件欠落」を出すようにします。
+- プロセスの強制終了やネイティブのクラッシュでは、リングは失われます。`UnhandledException` のときにダンプを試みるのは努力目標です。MMF を使えば強制終了にも耐えられますが、今回は過剰です。
+- OS ごと落ちた場合は、定期ステータスまでしか残りません。
+
+---
+
+## 6. 何が切り分けられるか
+
+| 仮説 | 示せること | 証明できないこと |
+|---|---|---|
+| 内部 Ctrl の残留 | 対応する up がない down、`:355-357` の追跡していない up、長く追跡されたまま `:278` で昇格したこと（きっかけが Backspace など）。パススルーした Ctrl なら、追跡中なのに非同期では up（信頼性あり）が続くことは、up の取り逃しを強く示します | 隠れ Ctrl をユーザーが実際に押していたかどうか（物理的な真値はありません） |
+| 合成 Ctrl の解放漏れ／再送信 | バッチ単位で、Ctrl down に対応する up があるか、plan の末尾で修飾を再び押していないか (`NavigationInputPlan.cs:34-37`)、Sent と Requested の差、自前フックでの観測 | 対象アプリが処理したかどうか |
+| フック通知の欠落 | 自前イベントが観測されないこと（注入経路については直接の証拠）。`GetLastInputInfo` が進んでいるのにコールバック数が増えないこと（フックの停止）。経過時間がタイムアウトに近いこと | 物理イベント1件ごとの欠落。リピートと二重 down は区別できません |
+| 受信アプリ側の状態／モード | Backspace の時点で判定が通過、追跡中の Ctrl なし、非同期 Ctrl が up（信頼性あり）、未完了のバッチなし、前後に foreign 注入なし。ここまでそろえば「このアプリは LL 段階で Ctrl を立てていない」と言え、残る候補は受信側（または後続のフック）です | **消去法で示唆できるだけで、証明にはなりません。** 端末を特定するには foreground の情報が要ります |
+
+なお、Ctrl を押した上での意図的な Ctrl+Backspace でも `:278` で昇格するのは正常な動作です。異常かどうかの判定には、昇格時の経過時間と、その後すぐ物理 up が来たかを使います。
+
+---
+
+## 7. 実装の優先順位とテスト案
+
+### 優先順位
+
+- **P0**
+  - `NativeMethods.SendKeyboardInputs` を件数と LastError を返す形にする
+  - `SendKeyboardInputs` の開始／完了レコードとバッチのスタック
+  - リング本体
+  - `HandleControlEvent` の全分岐、`:278`、Promote と Consume、`SendNavigation`、Backspace
+  - `ResetActiveStates` の reason 引数
+  - ダンプのトリガー（無効化、終了、リセット）
+  - `WriteHookStatus` の拡張（信頼性フラグ、カウンタ、Seq）
+- **P1**: 自前イベントの FIFO 照合と欠落検出、フック生存チェック、Alt 側の分岐、foreground の変化、Ctrl の不一致観測（記録のみで、回復処理はしない）
+- **P2**: マウスの昇格、`EventTime` による遅延、foreign 注入の分類、クラッシュ時のダンプ、トレイの「診断を保存」
+
+### テスト案（今回は実行していません）
+
+1. **リング単体**: 上書きと Seq ギャップ、リピート圧縮、整形。プライバシーの検査として、文字キーのイベントを流しても出力に VK や文字が現れず Other だけになること。
+2. **ハンドラ経路**: `AltRecoveryTests.cs:166-246` と同じように `GetUninitializedObject` と `_nextKeyboardHook` の差し替えを使い、さらに **送信関数と非同期キー読み取りの差し替え口**を追加します。差し替えた送信関数の中から、マーカー付きイベントで `KeyboardHookCore` を同期的に呼び（lParam は HGlobal に構造体を置く）、`SendBegin(b1, parent=k1) → OwnObserved(b1) → SendEnd(b1, sent=1, observed=1) → KeyOut(k1)` の順になることを確認します。
+3. **再入**: 送信中に物理 Ctrl up を割り込ませ、`:551-552` の前後の状態が記録されることを確認します（直すのではなく、可視化の確認です）。
+4. **部分送信**: 差し替えた送信関数が 0 や n-1 を返したとき、Sent が記録され、失敗カウントが増えること。
+5. **シナリオ**: 隠れ Ctrl → up を取り逃す → Backspace の順で、昇格レコード（きっかけ Backspace、経過時間）と異常ダンプのフラグが立つこと。無効化時はリセットより前にダンプが要求されること。
+6. **負荷**: 10 万件の合成イベントで、1 件あたりのコストと、`GC.GetAllocatedBytesForCurrentThread` が 0 であること。キューが満杯のときでもダンプファイルは影響を受けないこと。
+7. **実機（後日、ユーザーが手で行う）**: 既存の `--native-hooks` (`tests/AltHenkan.LogicTests/Program.cs:188`) を拡張します。Ghostty と WezTerm で別々に、Backspace、Ctrl+Backspace、Ctrl+H、Emacs の Ctrl+F、Ctrl を押しながらのクリックを試し、シェル側で `cat -v` などを使って受け取ったバイトとログを並べて比べます。
+
+ここまでは Read/Grep/Glob でコードを読んだだけで、ファイルの変更や実行は一切していません。
