@@ -10,6 +10,7 @@ internal sealed class AltInputService : IDisposable
     private const nuint OwnInputMarker = 0x414C5448;
 
     private readonly NativeMethods.HookProc _keyboardCallback;
+    private readonly NativeMethods.HookProc _nextKeyboardHook;
     private readonly NativeMethods.HookProc _mouseCallback;
     private readonly HashSet<uint> _nonAltKeysDown = [];
     private readonly AltState _leftAlt = new(AltSide.Left);
@@ -33,6 +34,15 @@ internal sealed class AltInputService : IDisposable
     private long _inputInjectionFailures;
     private long _lastStatusAtMilliseconds;
     private long _imeWidthCommandEvents;
+    private int _inputInjectionDepth;
+    private long _inputInjectionCalls;
+    private int _maxInputInjectionDepth;
+    private long _keyboardCallbacksDuringInjection;
+    private long _altReconcileChecks;
+    private long _altReconcileInjectionSkips;
+    private long _altReconcileInjectionSkipsWithAlt;
+    private int _maxAltReconcileInjectionDepth;
+    private long _altStateRecoveries;
 
     public event Action<int>? InputInjectionFailed;
     public event Action<bool>? EmacsModeChanged;
@@ -43,6 +53,8 @@ internal sealed class AltInputService : IDisposable
         _emacsState.SetActive(_settings.InitialEmacsActive);
         _initialNativeCapsLockOn = (NativeMethods.GetKeyState((int)NativeMethods.VkCapsLock) & 1) != 0;
         _keyboardCallback = KeyboardHookCallback;
+        _nextKeyboardHook = (code, wParam, lParam) =>
+            NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
         _mouseCallback = MouseHookCallback;
 
         _hookThread = new DedicatedMessageLoop(InitializeHookThread, CleanupHookThread);
@@ -157,6 +169,7 @@ internal sealed class AltInputService : IDisposable
     {
         var startedAt = Stopwatch.GetTimestamp();
         _keyboardCallbackCount++;
+        if (_inputInjectionDepth > 0) _keyboardCallbacksDuringInjection++;
         try
         {
             return KeyboardHookCore(code, wParam, lParam);
@@ -377,11 +390,20 @@ internal sealed class AltInputService : IDisposable
     {
         if (isKeyDown)
         {
+            // A down event invalidates release observations, even when it looks like a repeat.
+            state.ReleaseMonitor.Reset();
             if (state.IsDown)
             {
-                return state.OriginalDownPassed
-                    ? NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam)
-                    : SuppressKeyboardEvent();
+                if (state.OriginalDownPassed || state.NativeDownSent)
+                {
+                    // This may be a new press after a missed up. Forward native Alt repeats
+                    // too: swallowing this down would leave Windows up while the user holds Alt.
+                    // Its physical up can now follow the physical down through the hook chain.
+                    state.OriginalDownPassed = true;
+                    state.NativeDownSent = false;
+                    return _nextKeyboardHook(code, wParam, lParam);
+                }
+                return SuppressKeyboardEvent();
             }
 
             state.Start(data.ScanCode, (data.Flags & NativeMethods.LlkhfExtended) != 0);
@@ -422,7 +444,7 @@ internal sealed class AltInputService : IDisposable
         if (state.OriginalDownPassed)
         {
             state.Reset();
-            return NativeMethods.CallNextHookEx(_keyboardHook, code, wParam, lParam);
+            return _nextKeyboardHook(code, wParam, lParam);
         }
 
         if (state.NativeDownSent)
@@ -590,7 +612,8 @@ internal sealed class AltInputService : IDisposable
     {
         var result = NavigationModifiers.None;
         if (GetControlModifierSnapshot().AnyDown) result |= NavigationModifiers.Control;
-        if (_leftAlt.IsDown || _rightAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkMenu)) result |= NavigationModifiers.Alt;
+        if (GetAltSnapshot(_leftAlt).Active || GetAltSnapshot(_rightAlt).Active ||
+            IsVirtualKeyDown(NativeMethods.VkMenu)) result |= NavigationModifiers.Alt;
         if (IsVirtualKeyDown(NativeMethods.VkShift)) result |= NavigationModifiers.Shift;
         if (IsVirtualKeyDown(NativeMethods.VkLWin) || IsVirtualKeyDown(NativeMethods.VkRWin)) result |= NavigationModifiers.Windows;
         return result;
@@ -634,8 +657,8 @@ internal sealed class AltInputService : IDisposable
     {
         var control = GetControlModifierSnapshot().Sides;
         var alt = ModifierSides.None;
-        if (_leftAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkLMenu)) alt |= ModifierSides.Left;
-        if (_rightAlt.IsDown || IsVirtualKeyDown(NativeMethods.VkRMenu)) alt |= ModifierSides.Right;
+        if (GetAltSnapshot(_leftAlt).Active) alt |= ModifierSides.Left;
+        if (GetAltSnapshot(_rightAlt).Active) alt |= ModifierSides.Right;
         return new(control, alt, _settings.EmacsControlSide, _settings.EmacsAltSide);
     }
 
@@ -667,9 +690,9 @@ internal sealed class AltInputService : IDisposable
             modifiers.Add((ushort)NativeMethods.VkRControl);
         if (IsVirtualKeyDown(NativeMethods.VkLShift)) modifiers.Add((ushort)NativeMethods.VkLShift);
         if (IsVirtualKeyDown(NativeMethods.VkRShift)) modifiers.Add((ushort)NativeMethods.VkRShift);
-        if (_leftAlt.IsDown && (_leftAlt.OriginalDownPassed || _leftAlt.NativeDownSent))
+        if (GetAltSnapshot(_leftAlt).ShouldRestore)
             modifiers.Add((ushort)NativeMethods.VkLMenu);
-        if (_rightAlt.IsDown && (_rightAlt.OriginalDownPassed || _rightAlt.NativeDownSent))
+        if (GetAltSnapshot(_rightAlt).ShouldRestore)
             modifiers.Add((ushort)NativeMethods.VkRMenu);
 
         var plan = NavigationInputPlan.Create(binding, modifiers);
@@ -731,17 +754,27 @@ internal sealed class AltInputService : IDisposable
 
     private void SendKeyboardInputs(params NativeMethods.Input[] inputs)
     {
-        if (NativeMethods.SendKeyboardInputs(inputs, out var errorCode))
+        _inputInjectionDepth++;
+        _inputInjectionCalls++;
+        _maxInputInjectionDepth = Math.Max(_maxInputInjectionDepth, _inputInjectionDepth);
+        try
         {
-            if (DiagnosticLog.VerboseEnabled)
-                DiagnosticLog.WriteVerbose($"SendInput succeeded for {inputs.Length} keyboard event(s).");
+            if (NativeMethods.SendKeyboardInputs(inputs, out var errorCode))
+            {
+                if (DiagnosticLog.VerboseEnabled)
+                    DiagnosticLog.WriteVerbose($"SendInput succeeded for {inputs.Length} keyboard event(s).");
+            }
+            else
+            {
+                _inputInjectionFailures++;
+                DiagnosticLog.Write(
+                    $"SendInput failed for {inputs.Length} keyboard event(s); Windows error={errorCode}.");
+                InputInjectionFailed?.Invoke(errorCode);
+            }
         }
-        else
+        finally
         {
-            _inputInjectionFailures++;
-            DiagnosticLog.Write(
-                $"SendInput failed for {inputs.Length} keyboard event(s); Windows error={errorCode}.");
-            InputInjectionFailed?.Invoke(errorCode);
+            _inputInjectionDepth--;
         }
     }
 
@@ -877,6 +910,7 @@ internal sealed class AltInputService : IDisposable
 
         try
         {
+            ReconcileReleasedAlts();
             // Record even when a retained gesture prevents renewal indefinitely.
             var now = Environment.TickCount64;
             if (now - _lastStatusAtMilliseconds >= 30_000)
@@ -943,6 +977,47 @@ internal sealed class AltInputService : IDisposable
         return 1;
     }
 
+    private static AltModifierSnapshot GetAltSnapshot(AltState state) => new(
+        state.IsDown, state.OriginalDownPassed, state.NativeDownSent,
+        IsVirtualKeyDown(state.Side == AltSide.Left ? NativeMethods.VkLMenu : NativeMethods.VkRMenu));
+
+    private void ReconcileReleasedAlts()
+    {
+        _altReconcileChecks++;
+        // Do not interpret our temporary releases during SendInput as user releases.
+        if (_inputInjectionDepth != 0)
+        {
+            _altReconcileInjectionSkips++;
+            if (_leftAlt.IsDown || _rightAlt.IsDown) _altReconcileInjectionSkipsWithAlt++;
+            _maxAltReconcileInjectionDepth = Math.Max(_maxAltReconcileInjectionDepth, _inputInjectionDepth);
+            _leftAlt.ReleaseMonitor.Reset();
+            _rightAlt.ReleaseMonitor.Reset();
+            return;
+        }
+        if (!(_leftAlt.IsDown || _rightAlt.IsDown))
+        {
+            _leftAlt.ReleaseMonitor.Reset();
+            _rightAlt.ReleaseMonitor.Reset();
+            return;
+        }
+        var reliable = AsyncKeyStateAccess.TryReadAlt(out var foreground, out var leftDown, out var rightDown);
+        var now = Environment.TickCount64;
+        ReconcileReleasedAlt(_leftAlt, reliable, foreground, leftDown, now);
+        ReconcileReleasedAlt(_rightAlt, reliable, foreground, rightDown, now);
+    }
+
+    private void ReconcileReleasedAlt(AltState state, bool reliable, nint foreground, bool asyncDown, long now)
+    {
+        var snapshot = new AltModifierSnapshot(state.IsDown, state.OriginalDownPassed, state.NativeDownSent, asyncDown);
+        if (!state.ReleaseMonitor.Observe(snapshot, reliable, foreground, now)) return;
+        DiagnosticLog.Write($"Recovered released {state.Side} Alt: originalPassed={state.OriginalDownPassed}, " +
+            $"nativeSent={state.NativeDownSent}, heldMs={Environment.TickCount64 - state.DownAtMilliseconds}.");
+        // Windows already reports up. Clear bookkeeping without inventing a tap or injecting input.
+        state.Reset();
+        _altStateRecoveries++;
+        RequestRefresh("released Alt state reconciled");
+    }
+
     private void WriteHookStatus(string reason)
     {
         // No ordinary key codes, typed text, window titles or clipboard contents.
@@ -951,6 +1026,11 @@ internal sealed class AltInputService : IDisposable
             $"enabled={_settings.Enabled}, emacsEnabled={_settings.EmacsEnabled}, emacsActive={_emacsState.Active}, " +
             $"keyboardCallbacks={_keyboardCallbackCount}, mouseCallbacks={_mouseCallbackCount}, " +
             $"suppressed={_suppressedKeyboardEventCount}, injectionFailures={_inputInjectionFailures}, " +
+            $"injectionCalls={_inputInjectionCalls}, injectionDepth={_inputInjectionDepth}, " +
+            $"maxInjectionDepth={_maxInputInjectionDepth}, keyboardCallbacksDuringInjection={_keyboardCallbacksDuringInjection}, " +
+            $"altReconcileChecks={_altReconcileChecks}, altReconcileInjectionSkips={_altReconcileInjectionSkips}, " +
+            $"altReconcileInjectionSkipsWithAlt={_altReconcileInjectionSkipsWithAlt}, " +
+            $"maxAltReconcileInjectionDepth={_maxAltReconcileInjectionDepth}, " +
             $"refreshRequested={_refreshRequested}, sinceRefreshMs={Environment.TickCount64 - _lastRefreshAtMilliseconds}, " +
             $"leftAlt={_leftAlt.IsDown}/{_leftAlt.OriginalDownPassed}/{_leftAlt.NativeDownSent}, " +
             $"rightAlt={_rightAlt.IsDown}/{_rightAlt.OriginalDownPassed}/{_rightAlt.NativeDownSent}, " +
@@ -963,7 +1043,7 @@ internal sealed class AltInputService : IDisposable
             $"imeWidthEvents={_imeWidthCommandEvents}, " +
             $"asyncWidth={IsVirtualKeyDown(KeyHoldPolicy.ImeSingleByte)}/{IsVirtualKeyDown(KeyHoldPolicy.ImeDoubleByte)}, " +
             $"trackedWidth={_nonAltKeysDown.Contains(KeyHoldPolicy.ImeSingleByte)}/{_nonAltKeysDown.Contains(KeyHoldPolicy.ImeDoubleByte)}, " +
-            $"droppedLogs={DiagnosticLog.DroppedEntries}.");
+            $"altStateRecoveries={_altStateRecoveries}, droppedLogs={DiagnosticLog.DroppedEntries}.");
     }
 
     private void UnregisterHooks()
@@ -1003,6 +1083,7 @@ internal sealed class AltInputService : IDisposable
     private sealed class AltState(AltSide side)
     {
         public AltSide Side { get; } = side;
+        public AltReleaseMonitor ReleaseMonitor { get; } = new();
 
         public bool IsDown { get; set; }
 
@@ -1021,6 +1102,7 @@ internal sealed class AltInputService : IDisposable
 
         public void Start(uint scanCode, bool isExtended)
         {
+            ReleaseMonitor.Reset();
             IsDown = true;
             OriginalDownPassed = false;
             NativeDownSent = false;
@@ -1033,6 +1115,7 @@ internal sealed class AltInputService : IDisposable
 
         public void Reset()
         {
+            ReleaseMonitor.Reset();
             IsDown = false;
             OriginalDownPassed = false;
             NativeDownSent = false;

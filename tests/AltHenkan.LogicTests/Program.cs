@@ -10,6 +10,7 @@ EmacsExpansionTests.Run((name, passed) => Check(name, true, passed));
 MissedKeyUpTests.Run((name, passed) => Check(name, true, passed));
 DiagnosticTests.Run((name, passed) => Check(name, true, passed));
 KeyHoldPolicyTests.Run((name, passed) => Check(name, true, passed));
+AltRecoveryTests.Run((name, passed) => Check(name, true, passed));
 
 Check(
     "Short press sends conversion",
@@ -190,6 +191,7 @@ if (args.Contains("--native-hooks", StringComparer.Ordinal))
     var flags = BindingFlags.Instance | BindingFlags.NonPublic;
     var serviceType = typeof(AltInputService);
     var hookLoop = (DedicatedMessageLoop)serviceType.GetField("_hookThread", flags)!.GetValue(service)!;
+    AltRecoveryTests.RunNative(service, hookLoop, (name, passed) => Check(name, true, passed));
     Check("Native hooks are installed away from the caller/UI thread", true,
         hookLoop.ManagedThreadId != callerThread);
     var renewed = false;
