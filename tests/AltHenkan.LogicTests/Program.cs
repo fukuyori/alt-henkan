@@ -10,6 +10,7 @@ EmacsExpansionTests.Run((name, passed) => Check(name, true, passed));
 MissedKeyUpTests.Run((name, passed) => Check(name, true, passed));
 DiagnosticTests.Run((name, passed) => Check(name, true, passed));
 InputTraceTests.Run((name, passed) => Check(name, true, passed));
+ModifierReleaseTests.Run((name, passed) => Check(name, true, passed));
 if (args.Contains("--native-input-marker", StringComparer.Ordinal))
     InputTraceTests.RunNativeMarker((name, passed) => Check(name, true, passed));
 KeyHoldPolicyTests.Run((name, passed) => Check(name, true, passed));

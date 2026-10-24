@@ -331,6 +331,22 @@ internal sealed partial class AltInputService : IDisposable
 
     private nint HandleControlEvent(
         DeferredControlState state,
+        int code, nint wParam, nint lParam,
+        NativeMethods.KbdLlHookStruct data, bool isKeyDown)
+    {
+        var downVersion = state.ReleaseAudit.Begin(isKeyDown);
+        try { return HandleControlEventCore(state, code, wParam, lParam, data, isKeyDown); }
+        finally
+        {
+            if (!isKeyDown && state.ReleaseAudit.DownVersion == downVersion)
+                CheckModifierRelease(ref state.ReleaseAudit,
+                    state.Side == ModifierSides.Left ? InputTraceKey.LeftControl : InputTraceKey.RightControl,
+                    ModifierResidual(state.IsDown, state.OriginalDownPassed, state.NativeDownSent, state.ConsumedByEmacs), data);
+        }
+    }
+
+    private nint HandleControlEventCore(
+        DeferredControlState state,
         int code,
         nint wParam,
         nint lParam,
@@ -393,6 +409,23 @@ internal sealed partial class AltInputService : IDisposable
     }
 
     private nint HandleAltEvent(
+        AltState state,
+        int code, nint wParam, nint lParam,
+        NativeMethods.KbdLlHookStruct data, bool isKeyDown)
+    {
+        var downVersion = state.ReleaseAudit.Begin(isKeyDown);
+        try { return HandleAltEventCore(state, code, wParam, lParam, data, isKeyDown); }
+        finally
+        {
+            if (!isKeyDown && state.ReleaseAudit.DownVersion == downVersion)
+                CheckModifierRelease(ref state.ReleaseAudit,
+                    state.Side == AltSide.Left ? InputTraceKey.LeftAlt : InputTraceKey.RightAlt,
+                    ModifierResidual(state.IsDown, state.OriginalDownPassed, state.NativeDownSent, state.ConsumedByEmacs,
+                        state.DeferredShiftChord), data);
+        }
+    }
+
+    private nint HandleAltEventCore(
         AltState state,
         int code,
         nint wParam,
@@ -1145,6 +1178,7 @@ internal sealed partial class AltInputService : IDisposable
 
     private sealed class AltState(AltSide side)
     {
+        public ModifierReleaseAudit ReleaseAudit;
         public AltSide Side { get; } = side;
         public AltReleaseMonitor ReleaseMonitor { get; } = new();
 
@@ -1192,6 +1226,7 @@ internal sealed partial class AltInputService : IDisposable
 
     private sealed class DeferredControlState(ModifierSides side)
     {
+        public ModifierReleaseAudit ReleaseAudit;
         public ModifierSides Side { get; } = side;
 
         public bool IsDown { get; set; }

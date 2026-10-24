@@ -1,0 +1,48 @@
+Alt Henkan 0.4.2で再発した入力異常について、原因調査のレビューをしてください。現在HEADは4036b69 (0.4.2)、コードの未コミット変更はありません。今回は診断の妥当性を検証するレビューで、実装修正ではありません。ファイル変更、ビルド、入力送信、プロセス操作はしないでください。Read/Grep/Globだけでこのリポジトリ内を調べてください。
+
+ユーザーが確認した事実:
+- 2026-10-24に文字入力が壊れた。
+- Alt Henkanを無効化したら通常に戻った。
+- 発生直前、EmEditorで右Alt単独によるIME切り替えをしていた「と思う」と回答。操作の記憶は確定ではない。
+- 調査精度が悪いと指摘されている。原因の特定を進めず、同じ不明点と追加ログ案を繰り返したことが問題。
+
+生ログ: tmp/diagnostics-20261024-110025/
+- AltHenkan-diagnostics.log と .1～.4 (通常ログ)
+- AltHenkan-diagnostics.log.input と .1～.4 (入力イベントログ)
+- alt-sequences.json は私が抽出した候補であり、独立した証拠ではない。必ず生ログと照合する。
+ログの形式はREADME.mdの診断節、InputTrace.cs、AltInputService.Trace.csで確認可能。
+現在稼働PID26576は10:55起動。通常ログでversion=0.4.2.0を確認。現時点のPID24020はEmEditor、起動10:54:40。以前のPIDを現在のプロセス名に結び付けていない。
+
+私がログから報告した内容（これ自体を疑って検証すること）:
+1. 今回 session=4e2d49a5f61d439cb5abf8b120de6f92:
+   - .input:10065 に時刻アンカーの見出し。utc=2026-10-24T01:55:01.9140768+00:00 qpc=808312191 frequency=10000000。
+   - seq13～24 (ファイル10078付近): 同じEmEditorで右Alt down→右Alt up→ImeTap(0x16 down/up)。正常経路の比較対象。
+   - seq903 (.input:10968)、10:58:55.393: RightAlt down, own=False, flags=0x21。seq904 AltDeferredで抑止。
+   - seq905 (.input:10970)、10:58:56.196: Other up=True, own=False, flags=0x80, nonAltKeys=0, state=0x341000, asyncRaw=0。
+   - seq906～912: PromoteAlt→AltSend batch5/token7で右Alt downを送信。自前入力のフック通過とsent=1を確認。asyncRawが0x8、state=0x345000になる。
+   - seq903以降、無効化まではown=Falseの右Alt upは記録されていない。
+   - seq1051～1062 (.input:11116付近)、10:59:26.253: Enabled=False、Resetで右Alt upを送信。asyncRaw=0、内部状態も解除。
+   - 当該セッションseq1～1508は連番欠落なし。Trace gap/outageなし。
+2. 全世代から25セッションを読んで抽出した似た経路が3件:
+   - 10/23 18:56:20 左Alt、session=b020080100db4b62a83e1614d7be5d63、.input.3:15208 seq5737から。Other up→AltSend。次の左Alt down seq5752、up seq5754、次のイベントでasyncRaw=0。
+   - 10/24 09:31:41 右Alt、session=b68dcd3b1b7a47dba2a33f87eefbfae4、.input.1:10804 seq987から。Other up→AltSend。次の右Alt down seq1022、up seq1024、次のイベントでasyncRaw=0。
+   - 上記10:58の事例。
+   前2件でユーザーが文字入力異常を認識したかは未確認。「同じ症状が3回」とは断定できない。
+   抽出方法はAltのown=False/downから次の同じAltのown=FalseイベントまたはDisabled/Shutdownまでを見て、AltSend/downがあるのに最初のAlt upがないものを候補とした。この基準の見落とし・誤分類も検証すること。
+   全世代で観測したAltSend/downの送信元はOther downが12件、Other upが3件。ただし12件すべてが正常とは確認していない。
+
+現行コードで確認した点:
+- KeyboardHookCoreでは保留Altがあると、通常キーのdownだけでなくupでもPromotePendingAltsToNative()を呼ぶ。
+- PromotePendingAltToNativeは内部状態を根拠にAlt downを送信し、SendInput後にNativeDownSentをtrueにする。
+- 自動復旧AltReleaseMonitorはWindows側AsyncDownがtrueなら復旧対象外。今回はWindows側もtrueなので内部状態だけを直す復旧では対象外。
+- 通常キーはOtherに匿名化され、物理入力のVK/scanを保存していない。注入フラグがないことを物理入力の証明としない。GetAsyncKeyState=0も物理キーが離された証明にはならず、保留で元のdownを抑止している点が重要。
+
+レビューで答えてほしいこと:
+A. 上の事実整理・時系列・原因の絞り込みに誤りや飛躍があるか。確定事項と仮説を分離する。
+B. 既存ログとコードから、まだ確認できるのに見落としている証拠はないか。追加ログの一般論で終わらないこと。
+C. 同じ経路3件から何が言えて何が言えないか。Altのup欠落、別イベントへの変化、外部フック、IMEなどを根拠なしに原因と断定しない。
+D. 修正前に最優先で行う調査・再現試験は何か。単にupで昇格しない変更では直後のdownで再発し得る点、正当なAlt長押しとの区別も検討する。
+E. 追加観測が不可欠なら、具体的な未判定の問い、最小限の観測場所・項目、それで候補をどう区別できるかを示す。文字入力の無差別な収集は提案しない。
+
+関連コード: src/AltHenkan/AltInputService.cs, AltInputService.Trace.cs, InputTrace.cs, AltModifierSnapshot.cs, AsyncKeyStateAccess.cs, KeyHoldPolicy.cs, NativeMethods.cs, EmacsKeyboardState.cs、tests/AltHenkan.LogicTestsの既存回帰テスト。必要な依存も読むこと。
+出力は日本語。重要度順に、根拠のファイル:行番号とログのsession/seqを添えて指摘。APIの挙動が資料から確認できない場合は未確認と記載する。最後に「今確定できる結論」と「次に実行すべき具体的な調査」を短くまとめる。あなた自身が再現・テスト実行したとは書かないこと。
