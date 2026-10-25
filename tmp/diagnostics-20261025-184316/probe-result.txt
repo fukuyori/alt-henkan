@@ -1,7 +1,0 @@
-PASS: Ctrl is promoted and visible to the simulated OS
-PASS: Alt recovery clears Alt while Ctrl remains tracked
-PASS: Stale Ctrl participates in Emacs despite OS Ctrl being up
-PASS: Ordinary F is suppressed and produces Right (Ctrl+F action)
-PASS: OS Ctrl remains up immediately after the Emacs action
-PASS: Next ordinary key reinjects Ctrl down from stale internal state
-PASS: Delivered Ctrl up clears the tracked and simulated OS states

@@ -1,5 +1,0 @@
-Left: newDownSuppressed=True, downTimestampUnchanged=True, releaseMonitorSinceAfterNewDown=1000
-Left: IsDownAfterSecondReleasedSample=False, refreshRequested=True
-Right: newDownSuppressed=True, downTimestampUnchanged=True, releaseMonitorSinceAfterNewDown=1000
-Right: IsDownAfterSecondReleasedSample=False, refreshRequested=True
-Synthetic state-transition reproduction completed. No Windows input was sent. No global hook was installed.
