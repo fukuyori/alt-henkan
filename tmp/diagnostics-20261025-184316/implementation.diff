@@ -1,0 +1,591 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index b89c59d..fd1ad15 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,19 @@
+ 
+ Alt Henkan のバージョンごとの主な変更を記載します。
+ 
++## 未リリース
++
++### 修正
++
++- Windowsへ通過・送信済みのCtrlについて、Windowsの側別状態が解放を示す場合、残った内部状態だけでEmacsショートカットを成立させないように修正。別のCtrlで操作した際にも、除外した側を保留状態へ戻して再送信しないように変更。
++- 内部に残ったネイティブCtrlの押し直しを通過させ、対応する解放も正しく流すように修正。意図的に保留中のCtrlのリピートは従来どおり抑止。
++- 既存の1秒タイマーで、取得可能な同一前面のCtrl解放を1秒以上継続確認した場合に内部状態を復旧。保留中・長押し中・送信中・取得不能・前面変更・観測の途切れを区別し、Ctrl入力を新たに合成せず解除。
++
++### 診断・検証
++
++- Ctrl復旧の前後を `RecoveredControl`、復旧回数を `controlStateRecoveries` として記録。AltとCtrlで取得可能性の確認を共有し、対象の不一致がない間は重い権限照会を行わない。
++- 2026年10月25日のログに対応する解放通知欠落後の経路、左右Ctrlの混在、押し直し、長押し、外部入力、取得不能・再入を検証。通常時の監視負荷も測定。最初の解放通知が観測されなかった原因の特定とは区別する。
++
+ ## 0.4.3
+ 
+ ### 診断・検証
+diff --git a/README.md b/README.md
+index d5688ab..9e500c3 100644
+--- a/README.md
++++ b/README.md
+@@ -4,6 +4,8 @@
+ 
+ 0.4.3では、Alt・Ctrlの解放後に内部状態が残る場合の診断と、修飾キーを使った連続・反復操作の回帰テストを追加しています。正常時の追加検査はメモリ上の比較だけで行います。保存内容・採取方法・検証範囲は[診断](#診断)を参照してください。入力異常そのものの原因は未確定です。
+ 
++未リリースの変更では、解放通知が観測されずに残ったCtrl状態によるEmacs誤変換・Ctrl再送信を防ぎ、Ctrlの安全な状態復旧を追加しています。解放通知自体が観測されなかった原因は引き続き調査中です。
++
+ Alt Henkan は、左右の Alt キーを単独で押したときに追加の役割を与える、Windows の通知領域(システムトレイ)常駐アプリです。
+ 
+ - 左 Alt を単押し: IME をオフにする(`VK_IME_OFF`)
+@@ -86,6 +88,12 @@ Altの追加押下を受けた時点で復旧監視をリセットします。Wi
+ 
+ Emacsショートカット判定でも、Windowsへ渡したAltはWindows側の押下状態を確認します。操作後のAlt再送信も、押下中と確認できるものだけに限定します。これにより、内部に残ったAlt状態だけを根拠に通常の文字をAltショートカットへ変換したり、解放済みのAltを再び押下したりすることを防ぎます。
+ 
++未リリースのCtrl対策でも、Windowsへ渡したCtrlと、アプリが意図的に保留しているCtrlを区別します。Windows側の左右別状態が解放を示すCtrlは、古い内部押下だけでEmacsの修飾キーとして扱いません。修飾キー判定とEmacs処理に同じ観測を使い、有効な側だけを保留へ戻すことで、別のCtrl操作から古い側が再送信されることも防ぎます。ネイティブCtrlの押し直しは押下・解放を通過させ、保留中Ctrlのリピートは従来どおり抑止します。
++
++Ctrlの内部状態の復旧は、Altと共通の1秒タイマーで、取得可能な同一前面の解放を1秒以上継続確認した場合に限ります。意図的な保留、Emacsで消費後の保留、Windows側で押下中のCtrlは解除しません。新しい押下、前面変更、取得不能、観測間隔が2.5秒を超えた場合、入力送信中は確認をやり直します。復旧は内部状態の解除だけで、Ctrlタップや解放を新たに送信しません。キー処理中の生の状態値だけでは内部状態をリセットしません。
++
++取得可能性を確かめる重い権限照会は、通過・送信済みの修飾キーが内部に残り、Windowsからの生の取得値が解放を示す場合に限ります。AltとCtrlで1回の確認を共有し、毎キーの権限照会や追加の定期タイマーは使いません。
++
+ 取得失敗と解放状態が同じ戻り値になる点、およびキーイベント処理中には非同期状態がまだ更新されていない点は、Microsoftの [GetAsyncKeyState](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getasynckeystate) と [LowLevelKeyboardProc](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc) の仕様に基づきます。復旧の連続確認はキーのコールバック内ではなく、フック処理スレッドのタイマーで行います。
+ 
+ 前面ウィンドウが日本語レイアウト（LANGID `0x0411`）の場合、IMEの半角・全角指定用の仮想キー `VK_DBE_SBCSCHAR`（`0xF3`）・`VK_DBE_DBCSCHAR`（`0xF4`）は押下中の通常キーとして扱いません。Windows側にこの状態が残っていても、Alt単独操作・Emacs用Ctrl保留・無入力時のフック再登録を妨げないようにします。これらのイベント自体は抑止せず、そのまま通します。物理キーボードのF3・F4とは異なります。同じ値がOEMキーにも割り当てられているため、日本語以外またはレイアウト取得不能の場合は従来の判定を保ちます。
+@@ -159,9 +167,12 @@ $env:CODESIGN_TIMESTAMP_URL = "http://timestamp.digicert.com"     # 任意(既
+ - 再登録要求の有無、前回の再登録からの経過時間、ログキューの省略件数
+ - 前面ウィンドウのキーボードレイアウト、IME半角・全角指定イベントの通過回数（`imeWidthEvents`）、`0xF3`・`0xF4` のWindows側の状態（`asyncWidth`）と内部保持状態（`trackedWidth`）。いずれも半角・全角の順
+ - Alt保持状態の復旧回数（`altStateRecoveries`）。復旧した時点では `Recovered released Left/Right Alt` として、保持状態と経過時間も記録
++- 未リリース版のCtrl復旧回数（`controlStateRecoveries`）。通常ログの `Recovered released Left/Right Ctrl` と入力イベントログの `reason=RecoveredControl` に対象の側と復旧前後を記録。`traceSession`／`traceSeq` で対応付け
+ - キー送信処理の呼び出し回数（`injectionCalls`）、記録時点の送信処理の深さ（`injectionDepth`）、最大深さ（`maxInjectionDepth`）、送信処理中に呼ばれたキーボードフックの回数（`keyboardCallbacksDuringInjection`）
+ - Alt復旧確認の呼び出し回数（`altReconcileChecks`）、送信処理中のため確認を除外した回数（`altReconcileInjectionSkips`）、そのうち内部でAltを保持していた回数（`altReconcileInjectionSkipsWithAlt`）、除外時の最大深さ（`maxAltReconcileInjectionDepth`）
+ 
++未リリース版ではAltとCtrlの復旧確認を共有しています。既存の記録名を維持しているため、`altReconcileChecks`・`altReconcileInjectionSkips`・`maxAltReconcileInjectionDepth` は共通処理の回数・深さを表します。`altReconcileInjectionSkipsWithAlt` は引き続きAlt保持時だけの回数です。ネイティブCtrlの押し直しを通過させた記録は `ControlRepeatNative`、保留中Ctrlのリピート抑止は `ControlRepeat` で区別します。
++
+ 回数と最大深さは起動からの累計で、フック再登録ではリセットしません。終了時にも記録します。`altReconcileInjectionSkips` が増えれば、送信中の除外処理が実際に働いた証拠になります。`keyboardCallbacksDuringInjection` だけが増えても、復旧タイマーの再入を示すものではありません。除外回数が0でも、その記録期間中に観測されなかったことを示すだけで、除外処理が不要とは断定できません。送信の深さはラッパー処理の実行中を表し、Windowsでの入力処理完了を表すものではありません。
+ 
+ `leftAlt`・`rightAlt`・`leftCtrl`・`rightCtrl` の3値は「内部で押下中／元の押下イベントを通過済み／押下イベントをアプリから送信済み」の順です。Windowsから取得した状態は物理キーの押下を直接証明するものではありません。フックの処理スレッド自体が停止した場合は、このスレッド上の定期記録も停止します。
+@@ -216,6 +227,8 @@ Start-Process "C:\Program Files\AltHenkan\AltHenkan.exe" -ArgumentList "--diagno
+ 
+ 通常のロジックテストには、Emacs操作のキー解放を意図的に省き、後続の単独キーが抑止される条件、Ctrlの内部押下状態が残る条件、CapsLockの解放が欠ける条件を含めています。実際の状態クラスと再登録判定を使い、無入力が長く続いても保持状態によって再登録が延期される現行動作を確認します。実際のWindowsへのキー送信やフック登録は行いません。
+ 
++未リリース版のCtrl回帰テストでは、送信済みCtrlの解放通知を省き、模擬Windows状態だけを解放する条件を使います。普通のFがEmacs操作に変換されず、続くキー・マウス入力でもCtrlを再送信しないこと、安全な継続確認で内部状態が解除されることを検証します。左右の混在、管理外のCtrl、押し直し、遅延up、120秒の正常な保留・ネイティブ保持、取得不能、前面変更、観測の途切れ、送信中の再入も対照条件です。AltGr相当の模擬イベント列も検証しますが、実際の配列・デスクトップ切り替えでの動作や解放通知の欠落原因を再現したものではありません。
++
+ これらは問題の条件を固定する再現テストで、Ctrl・Alt・Emacsのキー解放通知の欠落全般から復旧済みであることを示すテストではありません。Windows全体で入力不能になった報告と同じ原因かどうかは未確定です。
+ 
+ Altの押し直しテストでは、実際のAltイベント処理と復旧処理を呼び、次のフックへの受け渡しだけを模擬処理に置き換えています。左右Altについて、最初の状態確認前／確認後の押し直し、通常のキーリピート、抑止中の長押し、押下から解放までの状態遷移を確認します。Windows側の押下状態は模擬しており、実際のキー入力は送信しません。
+diff --git a/src/AltHenkan/AltInputService.cs b/src/AltHenkan/AltInputService.cs
+index 43e96eb..ca2bf57 100644
+--- a/src/AltHenkan/AltInputService.cs
++++ b/src/AltHenkan/AltInputService.cs
+@@ -44,6 +44,7 @@ internal sealed partial class AltInputService : IDisposable
+     private long _altReconcileInjectionSkipsWithAlt;
+     private int _maxAltReconcileInjectionDepth;
+     private long _altStateRecoveries;
++    private long _controlStateRecoveries;
+ 
+     public event Action<int>? InputInjectionFailed;
+     public event Action<bool>? EmacsModeChanged;
+@@ -259,11 +260,12 @@ internal sealed partial class AltInputService : IDisposable
+             return HandleControlEvent(_rightControl, code, wParam, lParam, data, isKeyDown);
+         }
+ 
+-        var modifiers = isKeyDown && emacsEnabled && _emacsState.Active && EmacsBindings.IsSourceKey(data.VirtualKeyCode)
+-            ? GetNavigationModifiers() : NavigationModifiers.None;
++        var inspectModifiers = isKeyDown && emacsEnabled && _emacsState.Active && EmacsBindings.IsSourceKey(data.VirtualKeyCode);
++        var controlSnapshot = inspectModifiers ? GetControlModifierSnapshot() : default;
++        var modifiers = inspectModifiers ? GetNavigationModifiers(controlSnapshot) : NavigationModifiers.None;
+         if (_emacsState.HandleKey(data.VirtualKeyCode, isKeyDown, emacsEnabled,
+             modifiers, _settings.EmacsShortcuts, out var binding,
+-            modifiers == NavigationModifiers.None ? null : GetEmacsSideFilter()))
++            modifiers == NavigationModifiers.None ? null : GetEmacsSideFilter(controlSnapshot)))
+         {
+             if (binding is not null)
+             {
+@@ -273,7 +275,7 @@ internal sealed partial class AltInputService : IDisposable
+                 }
+                 if ((binding.Modifiers & NavigationModifiers.Control) != 0)
+                 {
+-                    ConsumePendingControlGestures();
++                    ConsumePendingControlGestures(controlSnapshot.Sides);
+                 }
+                 SendNavigation(binding);
+             }
+@@ -355,11 +357,17 @@ internal sealed partial class AltInputService : IDisposable
+     {
+         if (isKeyDown)
+         {
++            state.ReleaseMonitor.Reset();
+             if (state.IsDown)
+             {
+-                return state.OriginalDownPassed
+-                    ? ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlRepeat)
+-                    : SuppressKeyboardEvent(InputTraceReason.ControlRepeat);
++                if (state.OriginalDownPassed || state.NativeDownSent)
++                {
++                    // This can be a new press after a missed up, as with native Alt.
++                    state.OriginalDownPassed = true;
++                    state.NativeDownSent = false;
++                    return ForwardKeyboard(code, wParam, lParam, InputTraceReason.ControlRepeatNative);
++                }
++                return SuppressKeyboardEvent(InputTraceReason.ControlRepeat);
+             }
+ 
+             state.Start(data.ScanCode, (data.Flags & NativeMethods.LlkhfExtended) != 0);
+@@ -657,10 +665,10 @@ internal sealed partial class AltInputService : IDisposable
+         return thread == 0 ? 0 : unchecked((nuint)NativeMethods.GetKeyboardLayout(thread));
+     }
+ 
+-    private NavigationModifiers GetNavigationModifiers()
++    private NavigationModifiers GetNavigationModifiers(ControlModifierSnapshot control)
+     {
+         var result = NavigationModifiers.None;
+-        if (GetControlModifierSnapshot().AnyDown) result |= NavigationModifiers.Control;
++        if (control.AnyDown) result |= NavigationModifiers.Control;
+         if (GetAltSnapshot(_leftAlt).Active || GetAltSnapshot(_rightAlt).Active ||
+             IsVirtualKeyDown(NativeMethods.VkMenu)) result |= NavigationModifiers.Alt;
+         if (IsVirtualKeyDown(NativeMethods.VkShift)) result |= NavigationModifiers.Shift;
+@@ -674,10 +682,12 @@ internal sealed partial class AltInputService : IDisposable
+         if (_rightAlt.IsDown) _rightAlt.ConsumedByEmacs = true;
+     }
+ 
+-    private void ConsumePendingControlGestures()
++    private void ConsumePendingControlGestures(ModifierSides activeSides)
+     {
+-        ConsumePendingControlGesture(_leftControl);
+-        ConsumePendingControlGesture(_rightControl);
++        // Do not turn an excluded stale side into hidden Ctrl when the OTHER
++        // side invokes a shortcut. Hidden state is eligible for reinjection.
++        if ((activeSides & ModifierSides.Left) != 0) ConsumePendingControlGesture(_leftControl);
++        if ((activeSides & ModifierSides.Right) != 0) ConsumePendingControlGesture(_rightControl);
+     }
+ 
+     private void ConsumePendingControlGesture(DeferredControlState state)
+@@ -697,6 +707,7 @@ internal sealed partial class AltInputService : IDisposable
+         state.OriginalDownPassed = false;
+         state.NativeDownSent = false;
+         state.ConsumedByEmacs = true;
++        state.ReleaseMonitor.Reset();
+         TraceState(InputTraceReason.ConsumeControl, after: true);
+     }
+ 
+@@ -704,9 +715,9 @@ internal sealed partial class AltInputService : IDisposable
+         _settings.Enabled && _settings.EmacsEnabled && _emacsState.Active &&
+         EmacsSideFilter.Allows(state.Side, _settings.EmacsControlSide);
+ 
+-    private EmacsSideFilter GetEmacsSideFilter()
++    private EmacsSideFilter GetEmacsSideFilter(ControlModifierSnapshot controlSnapshot)
+     {
+-        var control = GetControlModifierSnapshot().Sides;
++        var control = controlSnapshot.Sides;
+         var alt = ModifierSides.None;
+         if (GetAltSnapshot(_leftAlt).Active) alt |= ModifierSides.Left;
+         if (GetAltSnapshot(_rightAlt).Active) alt |= ModifierSides.Right;
+@@ -718,12 +729,14 @@ internal sealed partial class AltInputService : IDisposable
+         _rightControl.IsDown,
+         IsVirtualKeyDown(NativeMethods.VkControl),
+         IsVirtualKeyDown(NativeMethods.VkLControl),
+-        IsVirtualKeyDown(NativeMethods.VkRControl));
++        IsVirtualKeyDown(NativeMethods.VkRControl),
++        _leftControl.OriginalDownPassed || _leftControl.NativeDownSent,
++        _rightControl.OriginalDownPassed || _rightControl.NativeDownSent);
+ 
+     private static bool IsShiftKey(uint key) => key is NativeMethods.VkShift or NativeMethods.VkLShift or NativeMethods.VkRShift;
+ 
+     private bool CanDeferAltShift() => _settings.Enabled && _settings.EmacsEnabled && _emacsState.Active &&
+-        EmacsBindings.ShouldDeferAltShift(_settings, GetEmacsSideFilter().AltDown) &&
++        EmacsBindings.ShouldDeferAltShift(_settings, GetEmacsSideFilter(GetControlModifierSnapshot()).AltDown) &&
+         !IsVirtualKeyDown(NativeMethods.VkControl) && !IsVirtualKeyDown(NativeMethods.VkLWin) && !IsVirtualKeyDown(NativeMethods.VkRWin);
+ 
+     private void MarkDeferredShiftChord()
+@@ -990,7 +1003,7 @@ internal sealed partial class AltInputService : IDisposable
+ 
+         try
+         {
+-            ReconcileReleasedAlts();
++            ReconcileReleasedModifiers();
+             // Record even when a retained gesture prevents renewal indefinitely.
+             var now = Environment.TickCount64;
+             if (now - _lastStatusAtMilliseconds >= 30_000)
+@@ -1064,7 +1077,7 @@ internal sealed partial class AltInputService : IDisposable
+         state.IsDown, state.OriginalDownPassed, state.NativeDownSent,
+         IsVirtualKeyDown(state.Side == AltSide.Left ? NativeMethods.VkLMenu : NativeMethods.VkRMenu));
+ 
+-    private void ReconcileReleasedAlts()
++    private void ReconcileReleasedModifiers()
+     {
+         _altReconcileChecks++;
+         // Do not interpret our temporary releases during SendInput as user releases.
+@@ -1075,18 +1088,50 @@ internal sealed partial class AltInputService : IDisposable
+             _maxAltReconcileInjectionDepth = Math.Max(_maxAltReconcileInjectionDepth, _inputInjectionDepth);
+             _leftAlt.ReleaseMonitor.Reset();
+             _rightAlt.ReleaseMonitor.Reset();
++            _leftControl.ReleaseMonitor.Reset();
++            _rightControl.ReleaseMonitor.Reset();
+             return;
+         }
+-        if (!(_leftAlt.IsDown || _rightAlt.IsDown))
+-        {
+-            _leftAlt.ReleaseMonitor.Reset();
+-            _rightAlt.ReleaseMonitor.Reset();
+-            return;
+-        }
+-        var reliable = AsyncKeyStateAccess.TryReadAlt(out var foreground, out var leftDown, out var rightDown);
+-        var now = Environment.TickCount64;
+-        ReconcileReleasedAlt(_leftAlt, reliable, foreground, leftDown, now);
+-        ReconcileReleasedAlt(_rightAlt, reliable, foreground, rightDown, now);
++        // Cheap prefilter: no token/process/desktop queries while idle, hidden,
++        // or visibly held. A raw "up" only requests the guarded read; it never
++        // authorizes recovery by itself. Evaluate all sides to reset monitors.
++        var leftAlt = NeedsReleaseCheck(_leftAlt.IsDown, _leftAlt.OriginalDownPassed || _leftAlt.NativeDownSent,
++            NativeMethods.VkLMenu, _leftAlt.ReleaseMonitor);
++        var rightAlt = NeedsReleaseCheck(_rightAlt.IsDown, _rightAlt.OriginalDownPassed || _rightAlt.NativeDownSent,
++            NativeMethods.VkRMenu, _rightAlt.ReleaseMonitor);
++        var leftControl = NeedsReleaseCheck(_leftControl.IsDown, _leftControl.OriginalDownPassed || _leftControl.NativeDownSent,
++            NativeMethods.VkLControl, _leftControl.ReleaseMonitor);
++        var rightControl = NeedsReleaseCheck(_rightControl.IsDown, _rightControl.OriginalDownPassed || _rightControl.NativeDownSent,
++            NativeMethods.VkRControl, _rightControl.ReleaseMonitor);
++        if (!(leftAlt || rightAlt || leftControl || rightControl)) return;
++        var sample = _platform.ReadModifierState();
++        var now = _platform.MonotonicMilliseconds;
++        if (leftAlt) ReconcileReleasedAlt(_leftAlt, sample.Reliable, sample.Foreground, sample.LeftAltDown, now);
++        if (rightAlt) ReconcileReleasedAlt(_rightAlt, sample.Reliable, sample.Foreground, sample.RightAltDown, now);
++        if (leftControl) ReconcileReleasedControl(_leftControl, sample.Reliable, sample.Foreground, sample.LeftControlDown, now);
++        if (rightControl) ReconcileReleasedControl(_rightControl, sample.Reliable, sample.Foreground, sample.RightControlDown, now);
++    }
++
++    private bool NeedsReleaseCheck(bool tracked, bool visible, uint key, ModifierReleaseMonitor monitor)
++    {
++        if (tracked && visible && !IsVirtualKeyDown(key)) return true;
++        monitor.Reset();
++        return false;
++    }
++
++    private void ReconcileReleasedControl(DeferredControlState state, bool reliable, nint foreground, bool asyncDown, long now)
++    {
++        if (!state.ReleaseMonitor.Observe(state.IsDown, state.OriginalDownPassed || state.NativeDownSent,
++            asyncDown, reliable, foreground, now)) return;
++        var key = state.Side == ModifierSides.Left ? InputTraceKey.LeftControl : InputTraceKey.RightControl;
++        var sequence = Trace(new() { Kind = InputTraceKind.State, Reason = InputTraceReason.RecoveredControl, Key = key });
++        DiagnosticLog.Write($"Recovered released {state.Side} Ctrl: originalPassed={state.OriginalDownPassed}, " +
++            $"nativeSent={state.NativeDownSent}, heldMs={Environment.TickCount64 - state.DownAtMilliseconds}, " +
++            $"traceSession={InputTrace.Session:N}, traceSeq={sequence}.");
++        state.Reset(); // Windows already reports up: never invent a tap or a release.
++        _controlStateRecoveries++;
++        Trace(new() { Kind = InputTraceKind.State, Reason = InputTraceReason.RecoveredControl, Key = key, Index = 1 });
++        RequestRefresh("released Ctrl state reconciled");
+     }
+ 
+     private void ReconcileReleasedAlt(AltState state, bool reliable, nint foreground, bool asyncDown, long now)
+@@ -1137,7 +1182,7 @@ internal sealed partial class AltInputService : IDisposable
+             $"imeWidthEvents={_imeWidthCommandEvents}, " +
+             $"asyncWidth={IsVirtualKeyDown(KeyHoldPolicy.ImeSingleByte)}/{IsVirtualKeyDown(KeyHoldPolicy.ImeDoubleByte)}, " +
+             $"trackedWidth={_nonAltKeysDown.Contains(KeyHoldPolicy.ImeSingleByte)}/{_nonAltKeysDown.Contains(KeyHoldPolicy.ImeDoubleByte)}, " +
+-            $"altStateRecoveries={_altStateRecoveries}, droppedLogs={DiagnosticLog.DroppedEntries}, " +
++            $"altStateRecoveries={_altStateRecoveries}, controlStateRecoveries={_controlStateRecoveries}, droppedLogs={DiagnosticLog.DroppedEntries}, " +
+             $"traceDropped={InputTrace.Dropped}, traceRecordFailures={InputTrace.RecordFailures}, " +
+             $"traceWriteError={InputTrace.LastError?.GetType().Name ?? "none"}.");
+     }
+@@ -1180,7 +1225,7 @@ internal sealed partial class AltInputService : IDisposable
+     {
+         public ModifierReleaseAudit ReleaseAudit;
+         public AltSide Side { get; } = side;
+-        public AltReleaseMonitor ReleaseMonitor { get; } = new();
++        public ModifierReleaseMonitor ReleaseMonitor { get; } = new();
+ 
+         public bool IsDown { get; set; }
+ 
+@@ -1227,6 +1272,8 @@ internal sealed partial class AltInputService : IDisposable
+     private sealed class DeferredControlState(ModifierSides side)
+     {
+         public ModifierReleaseAudit ReleaseAudit;
++        public ModifierReleaseMonitor ReleaseMonitor { get; } = new();
++        public long DownAtMilliseconds { get; private set; }
+         public ModifierSides Side { get; } = side;
+ 
+         public bool IsDown { get; set; }
+@@ -1246,6 +1293,8 @@ internal sealed partial class AltInputService : IDisposable
+ 
+         public void Start(uint scanCode, bool isExtended)
+         {
++            ReleaseMonitor.Reset();
++            DownAtMilliseconds = Environment.TickCount64;
+             IsDown = true;
+             OriginalDownPassed = false;
+             NativeDownSent = false;
+@@ -1256,6 +1305,8 @@ internal sealed partial class AltInputService : IDisposable
+ 
+         public void Reset()
+         {
++            ReleaseMonitor.Reset();
++            DownAtMilliseconds = 0;
+             IsDown = false;
+             OriginalDownPassed = false;
+             NativeDownSent = false;
+diff --git a/src/AltHenkan/AltModifierSnapshot.cs b/src/AltHenkan/AltModifierSnapshot.cs
+index 764828f..7c63e06 100644
+--- a/src/AltHenkan/AltModifierSnapshot.cs
++++ b/src/AltHenkan/AltModifierSnapshot.cs
+@@ -11,7 +11,7 @@ internal readonly record struct AltModifierSnapshot(
+     public bool ShouldRestore => TrackedDown && NativeVisible && AsyncDown;
+ }
+ 
+-internal sealed class AltReleaseMonitor
++internal sealed class ModifierReleaseMonitor
+ {
+     public const int ConfirmationMilliseconds = 1000;
+     public const int MaximumSampleGapMilliseconds = 2500;
+@@ -20,8 +20,11 @@ internal sealed class AltReleaseMonitor
+     private nint _foreground;
+ 
+     public bool Observe(AltModifierSnapshot state, bool reliable, nint foreground, long now)
++        => Observe(state.TrackedDown, state.NativeVisible, state.AsyncDown, reliable, foreground, now);
++
++    public bool Observe(bool trackedDown, bool nativeVisible, bool asyncDown, bool reliable, nint foreground, long now)
+     {
+-        if (!reliable || foreground == 0 || !state.TrackedDown || !state.NativeVisible || state.AsyncDown)
++        if (!reliable || foreground == 0 || !trackedDown || !nativeVisible || asyncDown)
+         {
+             Reset();
+             return false;
+diff --git a/src/AltHenkan/AsyncKeyStateAccess.cs b/src/AltHenkan/AsyncKeyStateAccess.cs
+index f031dd6..239c0dc 100644
+--- a/src/AltHenkan/AsyncKeyStateAccess.cs
++++ b/src/AltHenkan/AsyncKeyStateAccess.cs
+@@ -9,9 +9,14 @@ namespace AltHenkan;
+ internal static class AsyncKeyStateAccess
+ {
+     public static bool TryReadAlt(out nint foreground, out bool leftDown, out bool rightDown)
++        => TryReadModifiers(out foreground, out leftDown, out rightDown, out _, out _);
++
++    public static bool TryReadModifiers(out nint foreground, out bool leftDown, out bool rightDown,
++        out bool leftControlDown, out bool rightControlDown)
+     {
+         foreground = NativeMethods.GetForegroundWindow();
+         leftDown = rightDown = false;
++        leftControlDown = rightControlDown = false;
+         if (foreground == 0 || !IsInputDesktop()) return false;
+         if (NativeMethods.GetWindowThreadProcessId(foreground, out var processId) == 0) return false;
+         try
+@@ -32,6 +37,8 @@ internal static class AsyncKeyStateAccess
+             }
+             leftDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkLMenu) & 0x8000) != 0;
+             rightDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkRMenu) & 0x8000) != 0;
++            leftControlDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkLControl) & 0x8000) != 0;
++            rightControlDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkRControl) & 0x8000) != 0;
+             return NativeMethods.GetForegroundWindow() == foreground && IsInputDesktop();
+         }
+         catch (Exception exception) when (exception is System.Security.SecurityException or UnauthorizedAccessException)
+diff --git a/src/AltHenkan/ControlModifierSnapshot.cs b/src/AltHenkan/ControlModifierSnapshot.cs
+index 75cc1ff..247e2c8 100644
+--- a/src/AltHenkan/ControlModifierSnapshot.cs
++++ b/src/AltHenkan/ControlModifierSnapshot.cs
+@@ -5,11 +5,15 @@ internal readonly record struct ControlModifierSnapshot(
+     bool RightTrackedDown,
+     bool AsyncAnyDown,
+     bool AsyncLeftDown,
+-    bool AsyncRightDown)
++    bool AsyncRightDown,
++    bool LeftNativeVisible = false,
++    bool RightNativeVisible = false)
+ {
+-    public bool AnyDown => LeftTrackedDown || RightTrackedDown || AsyncAnyDown;
++    // Hidden Ctrl is intentionally absent from Windows state. A visible Ctrl,
++    // however, must not stay active solely because a key-up was missed.
++    public bool AnyDown => Sides != ModifierSides.None || AsyncAnyDown;
+ 
+     public ModifierSides Sides =>
+-        (LeftTrackedDown || AsyncLeftDown ? ModifierSides.Left : ModifierSides.None) |
+-        (RightTrackedDown || AsyncRightDown ? ModifierSides.Right : ModifierSides.None);
++        (AsyncLeftDown || LeftTrackedDown && !LeftNativeVisible ? ModifierSides.Left : ModifierSides.None) |
++        (AsyncRightDown || RightTrackedDown && !RightNativeVisible ? ModifierSides.Right : ModifierSides.None);
+ }
+diff --git a/src/AltHenkan/InputPlatform.cs b/src/AltHenkan/InputPlatform.cs
+index 498ae38..e39d22f 100644
+--- a/src/AltHenkan/InputPlatform.cs
++++ b/src/AltHenkan/InputPlatform.cs
+@@ -2,10 +2,19 @@ namespace AltHenkan;
+ 
+ internal readonly record struct InputSendResult(uint Sent, int Error);
+ internal readonly record struct InputForeground(nint Window, uint Process, uint Thread);
++internal readonly record struct InputModifierState(bool Reliable, nint Foreground,
++    bool LeftAltDown, bool RightAltDown, bool LeftControlDown, bool RightControlDown);
+ 
+ // Native boundary also lets tests exercise real handlers without installing hooks or injecting input.
+ internal class InputPlatform
+ {
++    public virtual long MonotonicMilliseconds => Environment.TickCount64;
++    public virtual InputModifierState ReadModifierState()
++    {
++        var reliable = AsyncKeyStateAccess.TryReadModifiers(out var foreground, out var leftAlt, out var rightAlt,
++            out var leftControl, out var rightControl);
++        return new(reliable, foreground, leftAlt, rightAlt, leftControl, rightControl);
++    }
+     public virtual InputSendResult Send(NativeMethods.Input[] inputs) => NativeMethods.SendKeyboardInputsDetailed(inputs);
+     public virtual bool IsDown(int key) => (NativeMethods.GetAsyncKeyState(key) & 0x8000) != 0;
+     public virtual nint NextKeyboard(nint hook, int code, nint wParam, nint lParam) =>
+diff --git a/src/AltHenkan/InputTrace.cs b/src/AltHenkan/InputTrace.cs
+index 06d614d..c413ae5 100644
+--- a/src/AltHenkan/InputTrace.cs
++++ b/src/AltHenkan/InputTrace.cs
+@@ -14,7 +14,7 @@ internal enum InputTraceReason
+     CapsLock, Emacs, ImeWidth, PromoteControl, PromoteAlt, ConsumeControl, Navigation,
+     ImeTap, ControlSend, AltSend, CapsReset, Settings, ResetBegin, ResetEnd,
+     Disabled, Suspend, SessionLock, Renewal, Shutdown, Registered, RecoveredAlt, Maintenance,
+-    Startup, BeforeReset, CallbackFailed, Unregistered, ModifierReleaseResidual
++    Startup, BeforeReset, CallbackFailed, Unregistered, ModifierReleaseResidual, ControlRepeatNative, RecoveredControl
+ }
+ 
+ // No ordinary key code, scan code, text, window title, or clipboard is stored here.
+@@ -252,6 +252,8 @@ internal sealed class InputTraceWriter : IDisposable
+             text += $" settings=0x{e.SettingsBits:X} longPressMs={e.LongPressMilliseconds} shortcuts=0x{e.Shortcuts:X}";
+         if (e.Reason == InputTraceReason.ModifierReleaseResidual)
+             text += $" key={e.Key} residual=0x{e.Index:X} up={e.Up} flags=0x{e.Flags:X} eventTime={e.EventTime}";
++        if (e.Reason == InputTraceReason.RecoveredControl)
++            text += $" key={e.Key}";
+         return text;
+     }
+ 
+diff --git a/tests/AltHenkan.LogicTests/AltRecoveryTests.cs b/tests/AltHenkan.LogicTests/AltRecoveryTests.cs
+index 3304084..4eb3ee2 100644
+--- a/tests/AltHenkan.LogicTests/AltRecoveryTests.cs
++++ b/tests/AltHenkan.LogicTests/AltRecoveryTests.cs
+@@ -12,7 +12,7 @@ internal static class AltRecoveryTests
+             var type = typeof(AltInputService);
+             var reconcile = type.GetMethod("ReconcileReleasedAlt", flags)!;
+             long Counter(string name) => (long)type.GetField(name, flags)!.GetValue(service)!;
+-            var checkAll = type.GetMethod("ReconcileReleasedAlts", flags)!;
++            var checkAll = type.GetMethod("ReconcileReleasedModifiers", flags)!;
+             foreach (var side in new[] { "_leftAlt", "_rightAlt" })
+             {
+                 var state = type.GetField(side, flags)!.GetValue(service)!;
+@@ -127,7 +127,7 @@ internal static class AltRecoveryTests
+             check("Held native Alt is released for navigation and restored afterwards",
+                 heldPlan[0] == new NavigationKeyStroke((ushort)NativeMethods.VkLMenu, true) &&
+                 heldPlan[^1] == new NavigationKeyStroke((ushort)NativeMethods.VkLMenu, false));
+-            var monitor = new AltReleaseMonitor();
++            var monitor = new ModifierReleaseMonitor();
+             check("First disagreement does not reset a native Alt gesture", !monitor.Observe(released, true, 1, 0));
+             check("Subsecond disagreement is not sufficient", !monitor.Observe(released, true, 1, 999));
+             check("One second of confirmed disagreement allows recovery", monitor.Observe(released, true, 1, 1000));
+@@ -139,14 +139,14 @@ internal static class AltRecoveryTests
+         var deferred = new AltModifierSnapshot(true, false, false, false);
+         check("Deferred physical Alt remains an active modifier even though Windows reports up",
+             deferred.Active && !deferred.ShouldRestore);
+-        var hiddenMonitor = new AltReleaseMonitor();
++        var hiddenMonitor = new ModifierReleaseMonitor();
+         for (var second = 0; second <= 120; second++)
+             check("Long deferred / Emacs-consumed Alt gesture is preserved",
+                 !hiddenMonitor.Observe(deferred, true, 1, second * 1000));
+         check("Untracked external native Alt can still select a shortcut",
+             new AltModifierSnapshot(false, false, false, true).Active);
+ 
+-        var gate = new AltReleaseMonitor();
++        var gate = new ModifierReleaseMonitor();
+         gate.Observe(stale, true, 1, 0);
+         check("Unavailable key state cancels confirmation", !gate.Observe(stale, false, 1, 1000));
+         check("Access restoration requires a new first sample", !gate.Observe(stale, true, 1, 2000));
+diff --git a/tests/AltHenkan.LogicTests/MissedKeyUpTests.cs b/tests/AltHenkan.LogicTests/MissedKeyUpTests.cs
+index d24feef..79eb820 100644
+--- a/tests/AltHenkan.LogicTests/MissedKeyUpTests.cs
++++ b/tests/AltHenkan.LogicTests/MissedKeyUpTests.cs
+@@ -34,16 +34,18 @@ internal static class MissedKeyUpTests
+ 
+         foreach (var left in new[] { true, false })
+         {
+-            // Inputs correspond to a retained tracked Ctrl down, despite all OS samples being up.
+-            var ctrl = new ControlModifierSnapshot(left, !left, false, false, false);
++            // A visible Ctrl with a missed up must not be confused with a
++            // legitimately hidden/deferred Ctrl, whose async state is also up.
++            var ctrl = new ControlModifierSnapshot(left, !left, false, false, false,
++                LeftNativeVisible: left, RightNativeVisible: !left);
+             var state = new EmacsKeyboardState();
+             state.SetActive(true);
+             var binding = EmacsBindings.All.First(b => b.Shortcut == EmacsShortcut.ControlF);
+-            check($"Retained {(left ? "left" : "right")} Ctrl translates a plain F press",
+-                state.HandleKey(binding.SourceKey, true, true,
++            check($"Released visible {(left ? "left" : "right")} Ctrl does not translate a plain F press",
++                !state.HandleKey(binding.SourceKey, true, true,
+                     ctrl.AnyDown ? NavigationModifiers.Control : NavigationModifiers.None, settings, out var actual) &&
+-                actual == binding);
+-            check("Retained Ctrl postpones even an explicitly requested renewal",
++                actual is null);
++            check("Ctrl bookkeeping still prevents renewal until safe recovery confirms release",
+                 !HookMaintenancePolicy.ShouldRefresh(3_600_000, 3_600_000, false,
+                     ctrl.LeftTrackedDown || ctrl.RightTrackedDown, true));
+         }
+diff --git a/tests/AltHenkan.LogicTests/ModifierReleaseTests.cs b/tests/AltHenkan.LogicTests/ModifierReleaseTests.cs
+index 4709308..a3f5532 100644
+--- a/tests/AltHenkan.LogicTests/ModifierReleaseTests.cs
++++ b/tests/AltHenkan.LogicTests/ModifierReleaseTests.cs
+@@ -184,7 +184,7 @@ internal static class ModifierReleaseTests
+             $"audited={result.Milliseconds:F2} ms, allocations={result.Bytes} bytes (local microbenchmark, not whole-app overhead).");
+     }
+ 
+-    private static AltInputService Create(Platform platform, bool emacs)
++    internal static AltInputService Create(Platform platform, bool emacs)
+     {
+         var service = new AltInputService(new AppSettings
+         { Enabled = true, EmacsEnabled = emacs, EmacsInitialMode = EmacsInitialMode.Emacs }, platform);
+@@ -204,23 +204,41 @@ internal static class ModifierReleaseTests
+         Modifiers.Skip(2).All(key => !StateFlag(service, key, "DeferredShiftChord")) &&
+         ((EmacsKeyboardState)typeof(AltInputService).GetField("_emacsState", Private)!.GetValue(service)!).CapturedKeyCount == 0;
+ 
+-    private sealed class Platform : InputPlatform
++    internal sealed class Platform : InputPlatform
+     {
+         public NativeMethods.HookProc Keyboard = null!;
+         public Action? OnForward;
++        public Action? OnSend;
+         public bool FailSend;
+         public int StateReads;
++        public int GuardedReads;
++        public long? Now;
++        public override long MonotonicMilliseconds => Now ?? base.MonotonicMilliseconds;
++        public bool Reliable = true;
++        public nint ForegroundWindow = 1;
+         public readonly List<(uint Key, bool Up)> Sent = [];
+         private readonly ushort _rightScan = (ushort)(NativeMethods.MapVirtualKey((uint)Keys.Right, NativeMethods.MapvkVkToVscEx) & 0xFF);
+         private readonly HashSet<uint> _down = [];
+         public bool AllUp => _down.Count == 0;
++        public void SetDown(uint key, bool down)
++        {
++            if (down) _down.Add(key); else _down.Remove(key);
++        }
++        public bool Down(uint key) => _down.Contains(key);
++        public override InputModifierState ReadModifierState()
++        {
++            GuardedReads++;
++            return new(Reliable, ForegroundWindow, Down(NativeMethods.VkLMenu), Down(NativeMethods.VkRMenu),
++                Down(NativeMethods.VkLControl), Down(NativeMethods.VkRControl));
++        }
+         public override bool IsDown(int key)
+         {
+             StateReads++;
+             return _down.Contains((uint)key) || key == NativeMethods.VkControl &&
+                 (_down.Contains(NativeMethods.VkLControl) || _down.Contains(NativeMethods.VkRControl));
+         }
+-        public override InputForeground Foreground() => new(1, 2, 3);
++        public override InputForeground Foreground() => new(ForegroundWindow, 2, 3);
++        public override nint NextMouse(nint hook, int code, nint wParam, nint lParam) => 0;
+         public override nint NextKeyboard(nint hook, int code, nint wParam, nint lParam)
+         {
+             var callback = OnForward;
+@@ -251,6 +269,9 @@ internal static class ModifierReleaseTests
+         public override InputSendResult Send(NativeMethods.Input[] inputs)
+         {
+             if (FailSend) { FailSend = false; throw new IOException("Release test send fault"); }
++            var callback = OnSend;
++            OnSend = null;
++            callback?.Invoke();
+             foreach (var input in inputs)
+             {
+                 var key = input.Data.Keyboard;
+diff --git a/tests/AltHenkan.LogicTests/Program.cs b/tests/AltHenkan.LogicTests/Program.cs
+index 4b14f91..d21d970 100644
+--- a/tests/AltHenkan.LogicTests/Program.cs
++++ b/tests/AltHenkan.LogicTests/Program.cs
+@@ -11,6 +11,7 @@ MissedKeyUpTests.Run((name, passed) => Check(name, true, passed));
+ DiagnosticTests.Run((name, passed) => Check(name, true, passed));
+ InputTraceTests.Run((name, passed) => Check(name, true, passed));
+ ModifierReleaseTests.Run((name, passed) => Check(name, true, passed));
++ControlRecoveryTests.Run((name, passed) => Check(name, true, passed));
+ if (args.Contains("--native-input-marker", StringComparer.Ordinal))
+     InputTraceTests.RunNativeMarker((name, passed) => Check(name, true, passed));
+ KeyHoldPolicyTests.Run((name, passed) => Check(name, true, passed));

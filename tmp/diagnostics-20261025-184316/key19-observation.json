@@ -1,0 +1,446 @@
+[
+  {
+    "at": "2026-10-25T19:26:01.8994107+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 53860,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:02.4050916+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 54360,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:02.9160073+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 54875,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:03.4308303+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 55391,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:03.9439168+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 55906,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:04.4576006+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 56406,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:04.9709877+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 56922,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:05.4849295+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 57438,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:05.9855668+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 57938,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:06.4959886+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 58453,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:07.0094257+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 58969,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  },
+  {
+    "at": "2026-10-25T19:26:07.5235959+09:00",
+    "foreground": 263750,
+    "pid": 29296,
+    "layout": "0x4110411",
+    "idleMs": 59485,
+    "states": {
+      "0x19": {
+        "highBitDown": true,
+        "raw": "0x8000"
+      },
+      "0xF3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xF4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA2": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA3": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA4": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      },
+      "0xA5": {
+        "highBitDown": false,
+        "raw": "0x0000"
+      }
+    }
+  }
+]

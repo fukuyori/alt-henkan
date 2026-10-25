@@ -1,0 +1,7 @@
+  AltHenkan -> D:\home\source\csharp\alt-henkan\src\AltHenkan\bin\Release\net8.0-windows\AltHenkan.dll
+
+ビルドに成功しました。
+    0 個の警告
+    0 エラー
+
+経過時間 00:00:00.55

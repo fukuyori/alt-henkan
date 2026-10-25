@@ -14,7 +14,7 @@ internal enum InputTraceReason
     CapsLock, Emacs, ImeWidth, PromoteControl, PromoteAlt, ConsumeControl, Navigation,
     ImeTap, ControlSend, AltSend, CapsReset, Settings, ResetBegin, ResetEnd,
     Disabled, Suspend, SessionLock, Renewal, Shutdown, Registered, RecoveredAlt, Maintenance,
-    Startup, BeforeReset, CallbackFailed, Unregistered, ModifierReleaseResidual
+    Startup, BeforeReset, CallbackFailed, Unregistered, ModifierReleaseResidual, ControlRepeatNative, RecoveredControl
 }
 
 // No ordinary key code, scan code, text, window title, or clipboard is stored here.
@@ -252,6 +252,8 @@ internal sealed class InputTraceWriter : IDisposable
             text += $" settings=0x{e.SettingsBits:X} longPressMs={e.LongPressMilliseconds} shortcuts=0x{e.Shortcuts:X}";
         if (e.Reason == InputTraceReason.ModifierReleaseResidual)
             text += $" key={e.Key} residual=0x{e.Index:X} up={e.Up} flags=0x{e.Flags:X} eventTime={e.EventTime}";
+        if (e.Reason == InputTraceReason.RecoveredControl)
+            text += $" key={e.Key}";
         return text;
     }
 

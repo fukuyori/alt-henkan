@@ -11,7 +11,7 @@ internal readonly record struct AltModifierSnapshot(
     public bool ShouldRestore => TrackedDown && NativeVisible && AsyncDown;
 }
 
-internal sealed class AltReleaseMonitor
+internal sealed class ModifierReleaseMonitor
 {
     public const int ConfirmationMilliseconds = 1000;
     public const int MaximumSampleGapMilliseconds = 2500;
@@ -20,8 +20,11 @@ internal sealed class AltReleaseMonitor
     private nint _foreground;
 
     public bool Observe(AltModifierSnapshot state, bool reliable, nint foreground, long now)
+        => Observe(state.TrackedDown, state.NativeVisible, state.AsyncDown, reliable, foreground, now);
+
+    public bool Observe(bool trackedDown, bool nativeVisible, bool asyncDown, bool reliable, nint foreground, long now)
     {
-        if (!reliable || foreground == 0 || !state.TrackedDown || !state.NativeVisible || state.AsyncDown)
+        if (!reliable || foreground == 0 || !trackedDown || !nativeVisible || asyncDown)
         {
             Reset();
             return false;

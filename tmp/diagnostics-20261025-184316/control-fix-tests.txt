@@ -1,0 +1,6 @@
+Release audit probe _leftControl: 100000 events, core=0.98 ms, audited=3.51 ms, allocations=0 bytes (local microbenchmark, not whole-app overhead).
+Release audit probe _rightControl: 100000 events, core=1.53 ms, audited=3.16 ms, allocations=0 bytes (local microbenchmark, not whole-app overhead).
+Release audit probe _leftAlt: 100000 events, core=1.48 ms, audited=3.49 ms, allocations=0 bytes (local microbenchmark, not whole-app overhead).
+Release audit probe _rightAlt: 100000 events, core=1.15 ms, audited=3.46 ms, allocations=0 bytes (local microbenchmark, not whole-app overhead).
+Idle modifier maintenance: 100000 calls, 3.76 ms, 0 bytes, no OS state queries (local probe).
+All 1649 tests passed.

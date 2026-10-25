@@ -12,7 +12,7 @@ internal static class AltRecoveryTests
             var type = typeof(AltInputService);
             var reconcile = type.GetMethod("ReconcileReleasedAlt", flags)!;
             long Counter(string name) => (long)type.GetField(name, flags)!.GetValue(service)!;
-            var checkAll = type.GetMethod("ReconcileReleasedAlts", flags)!;
+            var checkAll = type.GetMethod("ReconcileReleasedModifiers", flags)!;
             foreach (var side in new[] { "_leftAlt", "_rightAlt" })
             {
                 var state = type.GetField(side, flags)!.GetValue(service)!;
@@ -127,7 +127,7 @@ internal static class AltRecoveryTests
             check("Held native Alt is released for navigation and restored afterwards",
                 heldPlan[0] == new NavigationKeyStroke((ushort)NativeMethods.VkLMenu, true) &&
                 heldPlan[^1] == new NavigationKeyStroke((ushort)NativeMethods.VkLMenu, false));
-            var monitor = new AltReleaseMonitor();
+            var monitor = new ModifierReleaseMonitor();
             check("First disagreement does not reset a native Alt gesture", !monitor.Observe(released, true, 1, 0));
             check("Subsecond disagreement is not sufficient", !monitor.Observe(released, true, 1, 999));
             check("One second of confirmed disagreement allows recovery", monitor.Observe(released, true, 1, 1000));
@@ -139,14 +139,14 @@ internal static class AltRecoveryTests
         var deferred = new AltModifierSnapshot(true, false, false, false);
         check("Deferred physical Alt remains an active modifier even though Windows reports up",
             deferred.Active && !deferred.ShouldRestore);
-        var hiddenMonitor = new AltReleaseMonitor();
+        var hiddenMonitor = new ModifierReleaseMonitor();
         for (var second = 0; second <= 120; second++)
             check("Long deferred / Emacs-consumed Alt gesture is preserved",
                 !hiddenMonitor.Observe(deferred, true, 1, second * 1000));
         check("Untracked external native Alt can still select a shortcut",
             new AltModifierSnapshot(false, false, false, true).Active);
 
-        var gate = new AltReleaseMonitor();
+        var gate = new ModifierReleaseMonitor();
         gate.Observe(stale, true, 1, 0);
         check("Unavailable key state cancels confirmation", !gate.Observe(stale, false, 1, 1000));
         check("Access restoration requires a new first sample", !gate.Observe(stale, true, 1, 2000));

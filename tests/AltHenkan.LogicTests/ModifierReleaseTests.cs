@@ -184,7 +184,7 @@ internal static class ModifierReleaseTests
             $"audited={result.Milliseconds:F2} ms, allocations={result.Bytes} bytes (local microbenchmark, not whole-app overhead).");
     }
 
-    private static AltInputService Create(Platform platform, bool emacs)
+    internal static AltInputService Create(Platform platform, bool emacs)
     {
         var service = new AltInputService(new AppSettings
         { Enabled = true, EmacsEnabled = emacs, EmacsInitialMode = EmacsInitialMode.Emacs }, platform);
@@ -204,23 +204,42 @@ internal static class ModifierReleaseTests
         Modifiers.Skip(2).All(key => !StateFlag(service, key, "DeferredShiftChord")) &&
         ((EmacsKeyboardState)typeof(AltInputService).GetField("_emacsState", Private)!.GetValue(service)!).CapturedKeyCount == 0;
 
-    private sealed class Platform : InputPlatform
+    internal sealed class Platform : InputPlatform
     {
         public NativeMethods.HookProc Keyboard = null!;
         public Action? OnForward;
+        public Action? OnSend;
+        public Action? AfterSend;
         public bool FailSend;
         public int StateReads;
+        public int GuardedReads;
+        public long? Now;
+        public override long MonotonicMilliseconds => Now ?? base.MonotonicMilliseconds;
+        public bool Reliable = true;
+        public nint ForegroundWindow = 1;
         public readonly List<(uint Key, bool Up)> Sent = [];
         private readonly ushort _rightScan = (ushort)(NativeMethods.MapVirtualKey((uint)Keys.Right, NativeMethods.MapvkVkToVscEx) & 0xFF);
         private readonly HashSet<uint> _down = [];
         public bool AllUp => _down.Count == 0;
+        public void SetDown(uint key, bool down)
+        {
+            if (down) _down.Add(key); else _down.Remove(key);
+        }
+        public bool Down(uint key) => _down.Contains(key);
+        public override InputModifierState ReadModifierState()
+        {
+            GuardedReads++;
+            return new(Reliable, ForegroundWindow, Down(NativeMethods.VkLMenu), Down(NativeMethods.VkRMenu),
+                Down(NativeMethods.VkLControl), Down(NativeMethods.VkRControl));
+        }
         public override bool IsDown(int key)
         {
             StateReads++;
             return _down.Contains((uint)key) || key == NativeMethods.VkControl &&
                 (_down.Contains(NativeMethods.VkLControl) || _down.Contains(NativeMethods.VkRControl));
         }
-        public override InputForeground Foreground() => new(1, 2, 3);
+        public override InputForeground Foreground() => new(ForegroundWindow, 2, 3);
+        public override nint NextMouse(nint hook, int code, nint wParam, nint lParam) => 0;
         public override nint NextKeyboard(nint hook, int code, nint wParam, nint lParam)
         {
             var callback = OnForward;
@@ -251,6 +270,11 @@ internal static class ModifierReleaseTests
         public override InputSendResult Send(NativeMethods.Input[] inputs)
         {
             if (FailSend) { FailSend = false; throw new IOException("Release test send fault"); }
+            var callback = OnSend;
+            OnSend = null;
+            var after = AfterSend;
+            AfterSend = null;
+            callback?.Invoke();
             foreach (var input in inputs)
             {
                 var key = input.Data.Keyboard;
@@ -264,6 +288,7 @@ internal static class ModifierReleaseTests
                 Sent.Add((vk, up));
                 Deliver(vk, up, key.ExtraInfo, 0x10);
             }
+            after?.Invoke();
             return new((uint)inputs.Length, 0);
         }
     }

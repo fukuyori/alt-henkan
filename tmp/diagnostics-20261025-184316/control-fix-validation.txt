@@ -1,0 +1,42 @@
+Ctrl残留対策の実装・検証（2026-10-25）
+
+レビュー反映後の対策を作業ツリーへ実装。
+- ControlModifierSnapshot: 側別のNativeVisibleとasync状態を使い、古い内部CtrlをEmacs判定から除外。意図的なhidden Ctrlは維持。
+- AltInputService: 同一スナップショットを判定・左右制限・Consumeに使用。有効な側だけをConsumeすることで古い側のhidden化と再送信を防止。
+- ネイティブCtrlの押し直しはAltと同様に通過させ、対応upも通過。非自前downで解放監視をリセット。
+- ModifierReleaseMonitorと既存1秒タイマーでCtrlも安全に復旧。重い取得可能性確認をAltと共有し、idle/hidden/OS側押下中は省略。内部状態の解除では入力を合成しない。
+- Ctrl復旧の前後をRecoveredControl、回数をcontrolStateRecoveriesとして記録。
+- READMEとCHANGELOGの未リリース項目を更新。バージョンは0.4.3のまま。
+
+検証
+1. dotnet run --project tests/AltHenkan.LogicTests/AltHenkan.LogicTests.csproj -c Release
+   1,649件すべて成功。出力はcontrol-fix-tests.txt。
+   今回の欠落後の経路、左右の混在、管理外Ctrl、自前ではない注入Ctrl（本体の管理対象）と右Altの模擬イベント列、押し直し、遅延up、正当なhidden/visible長押し、取得不能、前面変更、観測の途切れ、送信中の再入を検証。
+   隠していない古いCtrlの誤変換・再送信は防止し、意図的なhidden Ctrlの正常動作は維持することを確認。
+2. dotnet build src/AltHenkan/AltHenkan.csproj -c Release --no-restore
+   成功、警告0・エラー0。
+3. git diff --check
+   成功。
+4. 無保持時のReconcileReleasedModifiersを10万回呼び出す限定測定
+   3.76 ms、管理ヒープ割り当て0バイト、状態問い合わせ0回。
+   正当なvisible長押し中は側別の軽い問い合わせのみで、重い取得可能性確認は0回。hidden長押しも重い確認0回。
+   アプリ全体のCPU負荷や実キーの遅延を測定したものではない。
+5. 追加の --native-hooks 実機検証
+   実行時のWindows取得値でvirtual key 0x19が押下中として観測され、既存の全キー解放条件を満たさなかったため、無入力時の自動フック再登録テスト1件が失敗。
+   出力: Native maintenance timeout: maximum OS idle=29625 ms, last OS idle=15 ms, held virtual keys observed at idle=[0x19].
+   出力: Native renewal observation: foreground HKL before=0x4110411, 0xF3 down before=False, after=False, timer restored=False.
+   出力: Maintenance timer automatically reinstalls removed hooks at idle: expected True, actual False.
+   この実機再登録確認は未完了。Windowsのキー状態を強制変更したり、全キー解放の安全条件を緩めたりしていない。
+   新しいCtrl復旧は再登録のidle条件より前に行われる。別のキーが保持中でもCtrlの内部状態を安全に復旧し、そのキー自体は変更しない対照テストを追加済み。
+
+限界
+- 初めの解放通知が観測されなかった原因は未特定。
+- 今回再現したのは通知欠落後の入力処理経路。自然発生の同じ操作、実配列のAltGr、デスクトップ/UIPIの全条件を再現したとは言えない。
+- OS側もCtrl押下を示し続ける場合や、意図的なhidden状態で解放通知が欠落する場合まで、無条件に解除する対策ではない。
+- Commit/tag/push、パッケージ作成、稼働中アプリの操作、Issueの更新は行っていない。
+
+実装レビュー後の追記
+- 自前でない注入Ctrl＋右Altのテストは本体の管理対象を通るため、AltGrの実配列検証という表現を訂正。
+- Ctrl一時解放の送信が戻る前に非自前down/upが再入する模擬条件で、古いConsumeが新しい状態を上書きしないよう世代ガードを追加。
+- 最終確認: 全1665件成功、Release build警告0/エラー0、git diff --check成功。詳細はclaude-implementation-review-evaluation.txt。
+- 0x19の観測とPowerToys一次資料はkey19-investigation.txt。再登録テストの失敗条件を除外して成功扱いにはしていない。

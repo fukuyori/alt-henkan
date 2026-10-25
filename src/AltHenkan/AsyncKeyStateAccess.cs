@@ -9,9 +9,14 @@ namespace AltHenkan;
 internal static class AsyncKeyStateAccess
 {
     public static bool TryReadAlt(out nint foreground, out bool leftDown, out bool rightDown)
+        => TryReadModifiers(out foreground, out leftDown, out rightDown, out _, out _);
+
+    public static bool TryReadModifiers(out nint foreground, out bool leftDown, out bool rightDown,
+        out bool leftControlDown, out bool rightControlDown)
     {
         foreground = NativeMethods.GetForegroundWindow();
         leftDown = rightDown = false;
+        leftControlDown = rightControlDown = false;
         if (foreground == 0 || !IsInputDesktop()) return false;
         if (NativeMethods.GetWindowThreadProcessId(foreground, out var processId) == 0) return false;
         try
@@ -32,6 +37,8 @@ internal static class AsyncKeyStateAccess
             }
             leftDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkLMenu) & 0x8000) != 0;
             rightDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkRMenu) & 0x8000) != 0;
+            leftControlDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkLControl) & 0x8000) != 0;
+            rightControlDown = (NativeMethods.GetAsyncKeyState((int)NativeMethods.VkRControl) & 0x8000) != 0;
             return NativeMethods.GetForegroundWindow() == foreground && IsInputDesktop();
         }
         catch (Exception exception) when (exception is System.Security.SecurityException or UnauthorizedAccessException)

@@ -5,11 +5,15 @@ internal readonly record struct ControlModifierSnapshot(
     bool RightTrackedDown,
     bool AsyncAnyDown,
     bool AsyncLeftDown,
-    bool AsyncRightDown)
+    bool AsyncRightDown,
+    bool LeftNativeVisible = false,
+    bool RightNativeVisible = false)
 {
-    public bool AnyDown => LeftTrackedDown || RightTrackedDown || AsyncAnyDown;
+    // Hidden Ctrl is intentionally absent from Windows state. A visible Ctrl,
+    // however, must not stay active solely because a key-up was missed.
+    public bool AnyDown => Sides != ModifierSides.None || AsyncAnyDown;
 
     public ModifierSides Sides =>
-        (LeftTrackedDown || AsyncLeftDown ? ModifierSides.Left : ModifierSides.None) |
-        (RightTrackedDown || AsyncRightDown ? ModifierSides.Right : ModifierSides.None);
+        (AsyncLeftDown || LeftTrackedDown && !LeftNativeVisible ? ModifierSides.Left : ModifierSides.None) |
+        (AsyncRightDown || RightTrackedDown && !RightNativeVisible ? ModifierSides.Right : ModifierSides.None);
 }

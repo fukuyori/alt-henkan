@@ -34,16 +34,18 @@ internal static class MissedKeyUpTests
 
         foreach (var left in new[] { true, false })
         {
-            // Inputs correspond to a retained tracked Ctrl down, despite all OS samples being up.
-            var ctrl = new ControlModifierSnapshot(left, !left, false, false, false);
+            // A visible Ctrl with a missed up must not be confused with a
+            // legitimately hidden/deferred Ctrl, whose async state is also up.
+            var ctrl = new ControlModifierSnapshot(left, !left, false, false, false,
+                LeftNativeVisible: left, RightNativeVisible: !left);
             var state = new EmacsKeyboardState();
             state.SetActive(true);
             var binding = EmacsBindings.All.First(b => b.Shortcut == EmacsShortcut.ControlF);
-            check($"Retained {(left ? "left" : "right")} Ctrl translates a plain F press",
-                state.HandleKey(binding.SourceKey, true, true,
+            check($"Released visible {(left ? "left" : "right")} Ctrl does not translate a plain F press",
+                !state.HandleKey(binding.SourceKey, true, true,
                     ctrl.AnyDown ? NavigationModifiers.Control : NavigationModifiers.None, settings, out var actual) &&
-                actual == binding);
-            check("Retained Ctrl postpones even an explicitly requested renewal",
+                actual is null);
+            check("Ctrl bookkeeping still prevents renewal until safe recovery confirms release",
                 !HookMaintenancePolicy.ShouldRefresh(3_600_000, 3_600_000, false,
                     ctrl.LeftTrackedDown || ctrl.RightTrackedDown, true));
         }

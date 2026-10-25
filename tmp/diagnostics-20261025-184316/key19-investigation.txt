@@ -1,0 +1,28 @@
+0x19 実機再登録阻害の調査（2026-10-25）
+
+確認した事実
+- observe-key19.ps1 はキー送信やフックを使わず、対象7キーだけを500ms間隔で12回観測。
+- 19:26:01.899〜19:26:07.524、foreground HKL=0x4110411、OS idle=53860〜59485ms。全12回でGetAsyncKeyState(0x19)=0x8000、左右Ctrl=0。結果はkey19-observation.json。
+- low bitの「最近押された」ではなくhigh bitの押下状態が立っている。
+- KeyHoldPolicy.csはHEAD d71009eから未変更。日本語レイアウトでも0x19は除外されず、再登録を保留する。Ctrl復旧はMaintainHooks内でこの判定より前に実行する。
+- 通常回帰テストは0x19 downがあってもCtrl内部状態の復旧を妨げず、0x19を解除しないことを検証済み。ただしタイマーコールバック全体の実機受入を証明するものではない。
+
+一次資料
+1. https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+   0x19=VK_KANJI/VK_HANJA。VK_IME_ON=0x16、VK_IME_OFF=0x1Aであり同一ではない。
+2. https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getasynckeystate
+   high bitは現在押下、low bitは最近の押下で信頼不可。0取得は解放と取得失敗を区別できない。
+3. https://github.com/microsoft/PowerToys/issues/6951#issuecomment-712469160
+   PowerToys開発者が Alt down → grave down → Alt up → grave up の順序でVK_KANJI残留が起こると報告。
+4. https://github.com/microsoft/PowerToys/pull/7386
+   merged=true、merge_commit_sha=4da4673e2486d81900f057d3779b0bc55be391cb をAPIで確認。
+   Shortcut.cpp IgnoreKeyCodeへIMEキー範囲（0x15〜0x1A、0x1C〜0x1F、VK_PROCESSKEY）を追加し、ショートカット判定で他のキーが押下中か検査する際に無視する対策。
+   これはフック再登録の安全性を証明する修正ではない。広いIME範囲をalt-henkanへ一括適用すると、実際の変換/無変換なども除外するため、そのまま取り込まない。
+
+判断
+- 今回のネイティブ再登録テストが失敗した直接条件は0x19押下判定である。
+- 同じキーの残留と対策例はPowerToys一次資料に存在する。
+- 今回のPCで残留を生んだ操作順序は観測していないため、Alt+grave操作が今回の原因だったとは断定しない。
+- 元のCtrl/Alt up欠落の原因と0x19残留の因果関係は未確認。今回のCtrl残留対策の失敗とは区別する。
+- 0x19をフック更新の全キー解放判定から除外する案は、対象レイアウト・実保持中の安全性・tracked keyへの影響を別途確認してから判断する。現時点では本体の判定は変更していない。
+- キー状態を解除するSendInput、IME切替、常駐アプリ操作は行っていない。

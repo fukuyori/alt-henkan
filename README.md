@@ -1,8 +1,8 @@
 # Alt Henkan
 
-ソースのバージョンは **0.4.3** です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+ソースのバージョンは **0.4.4** です。変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
 
-0.4.3では、Alt・Ctrlの解放後に内部状態が残る場合の診断と、修飾キーを使った連続・反復操作の回帰テストを追加しています。正常時の追加検査はメモリ上の比較だけで行います。保存内容・採取方法・検証範囲は[診断](#診断)を参照してください。入力異常そのものの原因は未確定です。
+0.4.4では、Windowsへ通過・送信済みのCtrlについて、解放通知が観測されずに残った内部状態によるEmacs誤変換・Ctrl再送信を防ぎ、安全な状態復旧を追加しています。Ctrl解放の送信中に新しい押下や解放が入った場合の状態上書きも防止します。保存内容・採取方法・検証範囲は[診断](#診断)を参照してください。解放通知自体が観測されなかった原因は引き続き調査中です。
 
 Alt Henkan は、左右の Alt キーを単独で押したときに追加の役割を与える、Windows の通知領域(システムトレイ)常駐アプリです。
 
@@ -86,6 +86,12 @@ Altの追加押下を受けた時点で復旧監視をリセットします。Wi
 
 Emacsショートカット判定でも、Windowsへ渡したAltはWindows側の押下状態を確認します。操作後のAlt再送信も、押下中と確認できるものだけに限定します。これにより、内部に残ったAlt状態だけを根拠に通常の文字をAltショートカットへ変換したり、解放済みのAltを再び押下したりすることを防ぎます。
 
+0.4.4のCtrl対策では、Windowsへ渡したCtrlと、アプリが意図的に保留しているCtrlを区別します。Windows側の左右別状態が解放を示すCtrlは、古い内部押下だけでEmacsの修飾キーとして扱いません。修飾キー判定とEmacs処理に同じ観測を使い、有効な側だけを保留へ戻すことで、別のCtrl操作から古い側が再送信されることも防ぎます。ネイティブCtrlの押し直しは押下・解放を通過させ、保留中Ctrlのリピートは従来どおり抑止します。
+
+Ctrlの内部状態の復旧は、Altと共通の1秒タイマーで、取得可能な同一前面の解放を1秒以上継続確認した場合に限ります。意図的な保留、Emacsで消費後の保留、Windows側で押下中のCtrlは解除しません。新しい押下、前面変更、取得不能、観測間隔が2.5秒を超えた場合、入力送信中は確認をやり直します。復旧は内部状態の解除だけで、Ctrlタップや解放を新たに送信しません。キー処理中の生の状態値だけでは内部状態をリセットしません。
+
+取得可能性を確かめる重い権限照会は、通過・送信済みの修飾キーが内部に残り、Windowsからの生の取得値が解放を示す場合に限ります。AltとCtrlで1回の確認を共有し、毎キーの権限照会や追加の定期タイマーは使いません。
+
 取得失敗と解放状態が同じ戻り値になる点、およびキーイベント処理中には非同期状態がまだ更新されていない点は、Microsoftの [GetAsyncKeyState](https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-getasynckeystate) と [LowLevelKeyboardProc](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc) の仕様に基づきます。復旧の連続確認はキーのコールバック内ではなく、フック処理スレッドのタイマーで行います。
 
 前面ウィンドウが日本語レイアウト（LANGID `0x0411`）の場合、IMEの半角・全角指定用の仮想キー `VK_DBE_SBCSCHAR`（`0xF3`）・`VK_DBE_DBCSCHAR`（`0xF4`）は押下中の通常キーとして扱いません。Windows側にこの状態が残っていても、Alt単独操作・Emacs用Ctrl保留・無入力時のフック再登録を妨げないようにします。これらのイベント自体は抑止せず、そのまま通します。物理キーボードのF3・F4とは異なります。同じ値がOEMキーにも割り当てられているため、日本語以外またはレイアウト取得不能の場合は従来の判定を保ちます。
@@ -159,8 +165,11 @@ $env:CODESIGN_TIMESTAMP_URL = "http://timestamp.digicert.com"     # 任意(既�
 - 再登録要求の有無、前回の再登録からの経過時間、ログキューの省略件数
 - 前面ウィンドウのキーボードレイアウト、IME半角・全角指定イベントの通過回数（`imeWidthEvents`）、`0xF3`・`0xF4` のWindows側の状態（`asyncWidth`）と内部保持状態（`trackedWidth`）。いずれも半角・全角の順
 - Alt保持状態の復旧回数（`altStateRecoveries`）。復旧した時点では `Recovered released Left/Right Alt` として、保持状態と経過時間も記録
+- 0.4.4で追加したCtrl復旧回数（`controlStateRecoveries`）。通常ログの `Recovered released Left/Right Ctrl` と入力イベントログの `reason=RecoveredControl` に対象の側と復旧前後を記録。`traceSession`／`traceSeq` で対応付け
 - キー送信処理の呼び出し回数（`injectionCalls`）、記録時点の送信処理の深さ（`injectionDepth`）、最大深さ（`maxInjectionDepth`）、送信処理中に呼ばれたキーボードフックの回数（`keyboardCallbacksDuringInjection`）
 - Alt復旧確認の呼び出し回数（`altReconcileChecks`）、送信処理中のため確認を除外した回数（`altReconcileInjectionSkips`）、そのうち内部でAltを保持していた回数（`altReconcileInjectionSkipsWithAlt`）、除外時の最大深さ（`maxAltReconcileInjectionDepth`）
+
+0.4.4ではAltとCtrlの復旧確認を共有しています。既存の記録名を維持しているため、`altReconcileChecks`・`altReconcileInjectionSkips`・`maxAltReconcileInjectionDepth` は共通処理の回数・深さを表します。`altReconcileInjectionSkipsWithAlt` は引き続きAlt保持時だけの回数です。ネイティブCtrlの押し直しを通過させた記録は `ControlRepeatNative`、保留中Ctrlのリピート抑止は `ControlRepeat` で区別します。
 
 回数と最大深さは起動からの累計で、フック再登録ではリセットしません。終了時にも記録します。`altReconcileInjectionSkips` が増えれば、送信中の除外処理が実際に働いた証拠になります。`keyboardCallbacksDuringInjection` だけが増えても、復旧タイマーの再入を示すものではありません。除外回数が0でも、その記録期間中に観測されなかったことを示すだけで、除外処理が不要とは断定できません。送信の深さはラッパー処理の実行中を表し、Windowsでの入力処理完了を表すものではありません。
 
@@ -215,6 +224,8 @@ Start-Process "C:\Program Files\AltHenkan\AltHenkan.exe" -ArgumentList "--diagno
 `--native-input-marker` は追加の明示オプションです。F24の押下・解放をWindowsへ送り、テスト専用フックで対象の自前入力を観測・抑止して、マーカーの往復を検証します。通常テストと `--native-hooks` だけではこの送信は行いません。この検証は実行した環境でのマーカーの保持を確認するもので、入力異常の再現や他の環境での動作を保証するものではありません。
 
 通常のロジックテストには、Emacs操作のキー解放を意図的に省き、後続の単独キーが抑止される条件、Ctrlの内部押下状態が残る条件、CapsLockの解放が欠ける条件を含めています。実際の状態クラスと再登録判定を使い、無入力が長く続いても保持状態によって再登録が延期される現行動作を確認します。実際のWindowsへのキー送信やフック登録は行いません。
+
+0.4.4のCtrl回帰テストでは、送信済みCtrlの解放通知を省き、模擬Windows状態だけを解放する条件を使います。普通のFがEmacs操作に変換されず、続くキー・マウス入力でもCtrlを再送信しないこと、安全な継続確認で内部状態が解除されることを検証します。左右の混在、管理外のCtrl、押し直し、遅延up、120秒の正常な保留・ネイティブ保持、取得不能、前面変更、観測の途切れ、送信中の再入も対照条件です。自前ではない注入Ctrlと右Altの組み合わせも検証します。このCtrlも本体の管理対象として処理されるため、実際のAltGr配列の検証ではありません。Ctrlを一時解放する送信中に新しい押下や解放が再入する模擬条件では、古い処理が新しい状態を上書きしないことも確認します。実機での再入・デスクトップ切り替えや、解放通知の欠落原因を再現したものではありません。
 
 これらは問題の条件を固定する再現テストで、Ctrl・Alt・Emacsのキー解放通知の欠落全般から復旧済みであることを示すテストではありません。Windows全体で入力不能になった報告と同じ原因かどうかは未確定です。
 

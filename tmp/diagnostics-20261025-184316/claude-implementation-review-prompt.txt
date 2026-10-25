@@ -1,0 +1,8 @@
+現在のCtrl残留対策の実装をレビューしてください。日本語で、重大度・ファイル行番号・成立する具体的イベント列を挙げてください。ファイル変更、Git操作、アプリ操作は禁止。Read/Grep/Globだけ利用してください。推測と確認済みを区別し、既存問題と今回導入した問題を区別してください。
+リポジトリ D:/home/source/csharp/alt-henkan、資料 tmp/diagnostics-20261025-184316/。
+最初に implementation.diff、control-fix-validation.txt、reviewed-plan.txt を読む。その後 src/AltHenkan/AltInputService.cs、ControlModifierSnapshot.cs、AltModifierSnapshot.cs、AsyncKeyStateAccess.cs、InputPlatform.cs、InputTrace.cs と tests/AltHenkan.LogicTests/ControlRecoveryTests.cs、ModifierReleaseTests.cs、MissedKeyUpTests.cs を確認。必要な周辺コードを参照してよい。
+元の欠陥: Ctrl downとAlt downの後up未観測、Altだけ復旧、OSではCtrl upでも内部Ctrl NativeDownSentが残り、次の入力をCtrl Emacs操作と誤認→hidden化→後続入力でCtrl再送信。初めのup欠落原因は未特定。
+実装はNativeVisibleのstale Ctrlを判定から除き、同一snapshotのactive側のみConsume、native Ctrl押し直しを通過、Altと共有する低負荷1秒監視で信頼できるup継続を確認したら内部Ctrlのみ解除する。
+観点: 本当に再送信経路が閉じるか、hiddenの正常長押し、他側Ctrl/管理外Ctrl/AltGr相当、押し直し/遅延up、SendInput中再入、取得不能/前面変更、Alt既存機能の退行、タイマーガードと低負荷、診断記録、テストの欠落。
+通常テスト1649件成功、Release build成功。追加--native-hooksの無入力時自動再登録テスト1件はWindows GetAsyncKeyStateで0x19 highbit downを観測して失敗した。KeyHoldPolicyは今回未変更で、0x19は既存の全キー解放条件に阻まれる。Ctrl復旧はMaintainHooksのその条件より前。Microsoft公式定義で0x19はVK_KANJI/VK_HANJA。名前だけを根拠にトグル状態と見なしたり除外したりしない。0x19を押下中と模擬してもCtrl回復できるテストは追加済み。この制約の扱いも評価する。
+根拠のある修正必須の不具合と、任意改善/残る実機検証を分けて報告してください。古いprobe/Program.csは変更前の再現用で現行signatureに追随していないので現行の失敗と混同しないでください。
