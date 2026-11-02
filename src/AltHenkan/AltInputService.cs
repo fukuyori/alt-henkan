@@ -1037,7 +1037,7 @@ internal sealed partial class AltInputService : IDisposable
                 return;
             }
 
-            // Includes real keys, modifiers and mouse buttons; excludes Japanese IME width commands.
+            // Includes real keys, modifiers and mouse buttons; excludes known latched Japanese IME commands.
             var anyKeyDown = KeyHoldPolicy.AnyKeyOrMouseButtonDown(
                 GetForegroundKeyboardLayout(), IsVirtualKeyDown);
 

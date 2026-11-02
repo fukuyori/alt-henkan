@@ -31,8 +31,31 @@ internal static class KeyHoldPolicyTests
             }
         }
 
+        // VK_KANJI/VK_HANJA can remain in the down state after an IME chord.
+        {
+            const uint kanji = 0x19;
+            var tracked = new HashSet<uint> { kanji };
+            var down = new HashSet<uint> { kanji };
+            check("Japanese VK_KANJI is treated as an IME hold artifact",
+                KeyHoldPolicy.IsImeHoldArtifact(kanji, japanese));
+            KeyHoldPolicy.PruneNonAltKeys(tracked, japanese, down.Contains);
+            check("Latched Japanese VK_KANJI no longer blocks standalone Alt", tracked.Count == 0);
+            check("Latched Japanese VK_KANJI permits due idle hook renewal",
+                HookMaintenancePolicy.ShouldRefresh(30_000, 1000,
+                    KeyHoldPolicy.AnyKeyOrMouseButtonDown(japanese, down.Contains), false, false));
+
+            foreach (var layout in new nuint[] { english, 0 })
+            {
+                tracked.Add(kanji);
+                KeyHoldPolicy.PruneNonAltKeys(tracked, layout, down.Contains);
+                check($"VK_KANJI remains a normal held key for layout 0x{layout:X}",
+                    !KeyHoldPolicy.IsImeHoldArtifact(kanji, layout) && tracked.Contains(kanji) &&
+                    KeyHoldPolicy.AnyKeyOrMouseButtonDown(layout, down.Contains));
+            }
+        }
+
         // Physical F3/F4, ordinary letters, punctuation, modifiers, mouse buttons and neighboring
-        // OEM/IME values must still delay renewal. Keep the exclusion deliberately narrow.
+        // OEM/IME values must still delay renewal, except the known Japanese VK_KANJI artifact.
         foreach (var key in new uint[] { 0x72, 0x73, 0x41, 0xBF, 0x09, 0x10, 0x11, 0x12,
             0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x01, 0x02, 0x04, 0x05, 0x06, 0xF2, 0xF5 })
         {

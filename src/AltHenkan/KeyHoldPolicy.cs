@@ -13,17 +13,23 @@ internal static class KeyHoldPolicy
     public static bool IsImeWidthCommand(uint key, nuint keyboardLayout) =>
         (keyboardLayout & 0xFFFF) == 0x0411 && IsWidthKeyCode(key);
 
+    // Japanese IMEs can leave VK_KANJI (also VK_HANJA) reported down after
+    // Alt+grave. Treat it like the width commands when checking held keys.
+    public static bool IsImeHoldArtifact(uint key, nuint keyboardLayout) =>
+        IsImeWidthCommand(key, keyboardLayout) ||
+        (keyboardLayout & 0xFFFF) == 0x0411 && key == 0x19;
+
     public static void PruneNonAltKeys(HashSet<uint> trackedKeys, nuint keyboardLayout,
         Func<uint, bool> isKeyDown)
     {
-        trackedKeys.RemoveWhere(key => IsImeWidthCommand(key, keyboardLayout) || !isKeyDown(key));
+        trackedKeys.RemoveWhere(key => IsImeHoldArtifact(key, keyboardLayout) || !isKeyDown(key));
     }
 
     public static bool AnyKeyOrMouseButtonDown(nuint keyboardLayout, Func<uint, bool> isKeyDown)
     {
         for (uint key = 1; key < 255; key++)
         {
-            if (!IsImeWidthCommand(key, keyboardLayout) && isKeyDown(key)) return true;
+            if (!IsImeHoldArtifact(key, keyboardLayout) && isKeyDown(key)) return true;
         }
         return false;
     }
